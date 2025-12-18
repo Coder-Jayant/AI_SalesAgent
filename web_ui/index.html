@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Sales Representative Agent - ReAct Mode</title>
+    <meta name="description" content="Intelligent AI sales assistant powered by ReAct reasoning and acting pattern">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <!-- Animated gradient background -->
+    <div class="gradient-bg"></div>
+
+    <!-- Main container -->
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1 class="logo">
+                    <span class="logo-icon">🤖</span>
+                    <span class="logo-text">ReAct Agent</span>
+                </h1>
+            </div>
+
+            <div class="sidebar-content">
+                <!-- Settings Section -->
+                <div class="sidebar-section">
+                    <h3 class="section-title">⚙️ Settings</h3>
+                    <div class="setting-item">
+                        <label class="toggle-label">
+                            <input type="checkbox" id="handsFreeToggle" class="toggle-input">
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-text">🚀 Hands-free Mode</span>
+                        </label>
+                        <p class="setting-hint">Auto-send routine emails without confirmation</p>
+                    </div>
+                </div>
+
+                <!-- Autopilot Service Section -->
+                <div class="sidebar-section">
+                    <h3 class="section-title">🤖 Autopilot Service</h3>
+                    <div id="serviceStatus" class="service-status">
+                        <div class="status-indicator">
+                            <span class="status-dot"></span>
+                            <span class="status-text">Loading...</span>
+                        </div>
+                    </div>
+
+                    <div class="setting-item">
+                        <label class="toggle-label">
+                            <input type="checkbox" id="autopilotServiceToggle" class="toggle-input">
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-text">Enable Autopilot Service</span>
+                        </label>
+                    </div>
+
+                    <div id="autopilotConfig" class="autopilot-config hidden">
+                        <label class="input-label">Check interval (minutes)</label>
+                        <input type="number" id="autopilotPeriod" class="input-field" min="1" max="60" value="5">
+
+                        <div class="button-group">
+                            <button id="savePeriodBtn" class="btn btn-sm btn-primary">💾 Save</button>
+                            <button id="restartServiceBtn" class="btn btn-sm btn-secondary">🔄 Restart</button>
+                        </div>
+
+                        <p id="lastRunTime" class="last-run-text"></p>
+
+                        <button id="runManualBtn" class="btn btn-block btn-accent">▶️ Run Now (Manual)</button>
+                    </div>
+
+                    <div id="serviceNotInstalled" class="info-message hidden">
+                        💡 Run <code>install_autopilot_service.bat</code> to install the service
+                    </div>
+                </div>
+
+                <!-- Recent Activity Section -->
+                <div class="sidebar-section">
+                    <h3 class="section-title">📊 Recent Activity</h3>
+                    <div id="activityLogs" class="activity-logs">
+                        <p class="no-activity">No activity yet</p>
+                    </div>
+                </div>
+
+                <button id="clearChatBtn" class="btn btn-block btn-danger">🧹 Clear Chat</button>
+            </div>
+        </aside>
+
+        <!-- Main content -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="main-header">
+                <h1 class="page-title">📧 AI Sales Representative Agent</h1>
+                <p class="page-subtitle">Powered by ReAct (Reasoning + Acting) Pattern</p>
+            </header>
+
+            <!-- Tab navigation -->
+            <nav class="tab-nav">
+                <button class="tab-btn active" data-tab="chatbox">💬 Chatbox</button>
+                <button class="tab-btn" data-tab="knowledge">📚 Knowledge Base</button>
+                <button class="tab-btn" data-tab="rules">⚙️ Autopilot Rules</button>
+                <button class="tab-btn" data-tab="activity">📊 Autopilot Activity</button>
+                <button class="tab-btn" data-tab="plans">🎯 Action Plans</button>
+                <button class="tab-btn" data-tab="connection">🔌 Connection Settings</button>
+            </nav>
+
+            <!-- Tab content -->
+            <div class="tab-content">
+                <!-- Tab 1: Chatbox -->
+                <div id="chatbox-tab" class="tab-pane active">
+                    <div class="chat-container">
+                        <div id="chatMessages" class="chat-messages"></div>
+                    </div>
+
+                    <div class="chat-input-container">
+                        <textarea id="chatInput" class="chat-input"
+                            placeholder="Ask me to check emails, draft replies, query knowledge base..."
+                            rows="1"></textarea>
+                        <button id="sendBtn" class="send-btn">
+                            <span class="send-icon">➤</span>
+                        </button>
+                    </div>
+
+                    <div class="chat-help">
+                        <details class="help-details">
+                            <summary>ℹ️ How to Use ReAct Mode</summary>
+                            <div class="help-content">
+                                <h4>ReAct Pattern = Reasoning + Acting</h4>
+                                <p>The agent will show you its thinking process:</p>
+                                <ul>
+                                    <li>💭 <strong>Thought:</strong> What the agent is thinking</li>
+                                    <li>⚙️ <strong>Action:</strong> Which tool it's using</li>
+                                    <li>📊 <strong>Observation:</strong> The result from the tool</li>
+                                    <li>✅ <strong>Final Answer:</strong> The conclusion</li>
+                                </ul>
+                                <h4>Try these queries:</h4>
+                                <ul>
+                                    <li>"List my latest 5 unread emails"</li>
+                                    <li>"Query the knowledge base about our cloud hosting pricing"</li>
+                                    <li>"Check unread emails and draft responses"</li>
+                                </ul>
+                            </div>
+                        </details>
+                    </div>
+                </div>
+
+                <!-- Tab 2: Knowledge Base -->
+                <div id="knowledge-tab" class="tab-pane">
+                    <div class="kb-header">
+                        <h2 class="section-heading">📚 Knowledge Base Management</h2>
+                        <p class="section-subheading">Upload company documents (policies, pricing, products) to power
+                            intelligent responses</p>
+                    </div>
+
+                    <div class="kb-active-section">
+                        <div class="active-collection-selector">
+                            <label class="input-label">🎯 Active Knowledge Base Collection</label>
+                            <div class="selector-group">
+                                <select id="activeCollectionSelect" class="select-field">
+                                    <option value="None">None</option>
+                                </select>
+                                <button id="setActiveBtn" class="btn btn-primary">✅ Set Active</button>
+                                <button id="refreshCollectionsBtn" class="btn btn-secondary">🔄 Refresh</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="kb-grid">
+                        <!-- Upload Section -->
+                        <div class="kb-card">
+                            <h3 class="card-title">📤 Upload Documents</h3>
+                            <div class="upload-form">
+                                <label class="input-label">Collection Name</label>
+                                <input type="text" id="collectionName" class="input-field" value="sales_knowledge_base"
+                                    placeholder="e.g., sales_knowledge_base">
+
+                                <label class="input-label">Upload files</label>
+                                <div class="file-upload-zone" id="fileUploadZone">
+                                    <input type="file" id="fileInput" multiple accept=".txt,.md,.pdf" hidden>
+                                    <div class="upload-placeholder">
+                                        <span class="upload-icon">📁</span>
+                                        <p>Click or drag files here</p>
+                                        <p class="upload-hint">Supports: .txt, .md, .pdf</p>
+                                    </div>
+                                    <div id="fileList" class="file-list hidden"></div>
+                                </div>
+
+                                <label class="input-label">Collection Description (optional)</label>
+                                <textarea id="collectionDesc" class="textarea-field"
+                                    placeholder="e.g., Q4 2024 pricing policies and product catalog"
+                                    rows="3"></textarea>
+
+                                <button id="buildKBBtn" class="btn btn-block btn-primary">🚀 Build Knowledge
+                                    Base</button>
+                            </div>
+                        </div>
+
+                        <!-- Test Section -->
+                        <div class="kb-card">
+                            <h3 class="card-title">🔍 Test Knowledge Base</h3>
+                            <div id="kbTestContainer" class="kb-test-container">
+                                <div id="kbNoActive" class="warning-message">
+                                    ⚠️ No active collection. Upload documents or select an existing collection.
+                                </div>
+                                <div id="kbTestForm" class="hidden">
+                                    <div id="kbActiveInfo" class="info-message"></div>
+
+                                    <label class="input-label">Test Query</label>
+                                    <input type="text" id="testQuery" class="input-field"
+                                        placeholder="e.g., What are our cloud hosting prices?">
+
+                                    <label class="input-label">Number of results: <span id="testKValue">3</span></label>
+                                    <input type="range" id="testK" class="slider" min="1" max="10" value="3">
+
+                                    <button id="searchKBBtn" class="btn btn-block btn-primary">🔍 Search</button>
+
+                                    <div id="searchResults" class="search-results hidden"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Collections Management -->
+                    <div class="collections-section">
+                        <h3 class="section-heading">🗂️ Manage Collections</h3>
+                        <div id="collectionsList" class="collections-list">
+                            <p class="no-collections">No collections yet. Upload documents to create one.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 3: Autopilot Rules -->
+                <div id="rules-tab" class="tab-pane">
+                    <div class="rules-header">
+                        <h2 class="section-heading">⚙️ Autopilot Rules Configuration</h2>
+                        <p class="section-subheading">Define natural language rules for how the agent should handle
+                            different types of emails</p>
+                    </div>
+
+                    <div class="rules-list-section">
+                        <h3 class="subsection-heading">📋 Active Rules (sorted by priority)</h3>
+                        <p class="hint-text">💡 Priority: 1=Critical, 2=Medium, 3=Low. Used only when rules contradict
+                            each other.</p>
+                        <div id="rulesList" class="rules-list"></div>
+                    </div>
+
+                    <button id="saveRulesBtn" class="btn btn-block btn-primary">💾 Save All Rule Changes</button>
+
+                    <div class="add-rule-section">
+                        <h3 class="subsection-heading">➕ Create New Rule</h3>
+                        <div class="form-card">
+                            <label class="input-label">Rule Name</label>
+                            <input type="text" id="newRuleName" class="input-field"
+                                placeholder="e.g., High-priority customer handler">
+
+                            <label class="input-label">Priority</label>
+                            <select id="newRulePriority" class="select-field">
+                                <option value="1">1 - Critical</option>
+                                <option value="2">2 - Medium</option>
+                                <option value="3" selected>3 - Low</option>
+                            </select>
+                            <p class="input-hint">1=Critical (urgent/security), 2=Medium (standard), 3=Low (general).
+                                Used only when rules conflict.</p>
+
+                            <label class="input-label">Rule Instruction (Natural Language)</label>
+                            <textarea id="newRulePrompt" class="textarea-field"
+                                placeholder="e.g., If email is from a VIP customer (domain: @bigcorp.com), immediately escalate to human and send acknowledgment."
+                                rows="4"></textarea>
+
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="newRuleEnabled" class="checkbox-input" checked>
+                                <span>Enable this rule immediately</span>
+                            </label>
+
+                            <button id="addRuleBtn" class="btn btn-block btn-accent">➕ Add Rule</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 4: Autopilot Activity -->
+                <div id="activity-tab" class="tab-pane">
+                    <div class="activity-header">
+                        <h2 class="section-heading">📊 Autopilot Activity Logs</h2>
+                        <p class="section-subheading">Recent actions taken by the autopilot system</p>
+                    </div>
+
+                    <div id="activitySummaries" class="activity-summaries"></div>
+
+                    <div class="all-logs-section">
+                        <h3 class="subsection-heading">📝 All Logs</h3>
+                        <div id="allLogs" class="all-logs-container">
+                            <p class="no-logs">No logs available</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 5: Action Plans -->
+                <div id="plans-tab" class="tab-pane">
+                    <div class="plans-header">
+                        <h2 class="section-heading">🎯 Action Plans Management</h2>
+                        <p class="section-subheading">Define and manage recurring automation tasks that execute when
+                            autopilot is ON</p>
+                    </div>
+
+                    <div class="plans-list-section">
+                        <h3 class="subsection-heading">📋 Active Action Plans</h3>
+                        <div id="plansList" class="plans-list"></div>
+                    </div>
+
+                    <button id="savePlansBtn" class="btn btn-block btn-primary hidden">💾 Save Action Plan
+                        Changes</button>
+
+                    <div class="add-plan-section">
+                        <h3 class="subsection-heading">➕ Create New Action Plan</h3>
+                        <div class="info-message">
+                            💡 <strong>Tip:</strong> Use the chatbot to create action plans with advanced scheduling
+                            (hourly, daily, custom intervals in minutes/hours/days)
+                        </div>
+                        <div class="form-card">
+                            <label class="input-label">Plan Name</label>
+                            <input type="text" id="newPlanName" class="input-field"
+                                placeholder="e.g., VIP Customer Daily Summary">
+
+                            <label class="input-label">Task Description</label>
+                            <textarea id="newPlanTask" class="textarea-field"
+                                placeholder="e.g., Fetch all unread emails from VIP customers, query KB for context, generate summary report"
+                                rows="4"></textarea>
+
+                            <label class="input-label">Execution Frequency</label>
+                            <select id="newPlanFrequency" class="select-field">
+                                <option value="every_sweep">Every Autopilot Sweep</option>
+                                <option value="hourly">Once per Hour</option>
+                                <option value="daily">Once per Day</option>
+                            </select>
+
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="newPlanEnabled" class="checkbox-input" checked>
+                                <span>Enable immediately</span>
+                            </label>
+
+                            <button id="addPlanBtn" class="btn btn-block btn-accent">➕ Add Action Plan</button>
+                        </div>
+                    </div>
+
+                    <div class="execution-history-section">
+                        <h3 class="subsection-heading">📊 Action Plan Execution History</h3>
+                        <p class="hint-text">View past executions of your action plans</p>
+                        <div id="executionHistory" class="execution-history"></div>
+                    </div>
+                </div>
+
+                <!-- Tab 6: Connection Settings -->
+                <div id="connection-tab" class="tab-pane">
+                    <div class="connection-header">
+                        <h2 class="section-heading">🔌 Exchange Web Services Connection</h2>
+                        <p class="section-subheading">Configure your Microsoft Exchange email account credentials</p>
+                    </div>
+
+                    <div class="connection-grid">
+                        <!-- Configuration Form -->
+                        <div class="connection-card">
+                            <h3 class="card-title">📧 EWS Configuration</h3>
+                            <div class="connection-form">
+                                <label class="input-label">Email Address</label>
+                                <input type="email" id="ewsEmail" class="input-field"
+                                    placeholder="sales-ai@company.com">
+
+                                <label class="input-label">Password</label>
+                                <div class="password-input-group">
+                                    <input type="password" id="ewsPassword" class="input-field"
+                                        placeholder="Enter password">
+                                    <button type="button" id="togglePassword" class="toggle-password-btn">👁️</button>
+                                </div>
+
+                                <label class="input-label">Exchange Server Host</label>
+                                <input type="text" id="ewsHost" class="input-field" placeholder="mail.company.com">
+                                <p class="input-hint">Optional, auto-detected if empty</p>
+
+                                <label class="input-label">Signature Name</label>
+                                <input type="text" id="agentName" class="input-field" placeholder="Cyfuture Sales Team">
+                                <p class="input-hint">Name to use in email signatures</p>
+
+                                <div class="button-group">
+                                    <button id="testConnectionBtn" class="btn btn-primary btn-block">🧪 Test & Save
+                                        Connection</button>
+                                    <button id="saveWithoutTestBtn" class="btn btn-secondary btn-block">💾 Save Without
+                                        Testing</button>
+                                </div>
+
+                                <div class="quick-test-section">
+                                    <h4 class="card-subtitle">📬 Quick Email Fetch Test</h4>
+                                    <button id="fetchTestBtn" class="btn btn-block btn-accent">📥 Fetch 5 Unread
+                                        Emails</button>
+                                    <div id="fetchResults" class="fetch-results hidden"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Info Panel -->
+                        <div class="connection-card">
+                            <h3 class="card-title">ℹ️ Connection Info</h3>
+                            <div id="connectionInfo" class="connection-info">
+                                <div class="info-item">
+                                    <span class="info-label">Email:</span>
+                                    <span class="info-value">Not set</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Host:</span>
+                                    <span class="info-value">Auto-detect</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Password:</span>
+                                    <span class="info-value">Not set</span>
+                                </div>
+                            </div>
+
+                            <div class="info-box info-box-primary">
+                                <h4 class="info-box-title">📋 Requirements</h4>
+                                <ul class="info-list">
+                                    <li>Valid Exchange Web Services account</li>
+                                    <li>SMTP access enabled</li>
+                                    <li>Calendar permissions (for scheduling)</li>
+                                    <li>Mailbox read/write access</li>
+                                </ul>
+                            </div>
+
+                            <div class="info-box info-box-warning">
+                                <h4 class="info-box-title">🔒 Security</h4>
+                                <ul class="info-list">
+                                    <li>Credentials are saved to <code>.env</code> file</li>
+                                    <li>Never commit <code>.env</code> to version control</li>
+                                    <li>Use app-specific passwords when possible</li>
+                                    <li>Restart app after saving to load credentials</li>
+                                </ul>
+                            </div>
+
+                            <div class="info-box info-box-success">
+                                <h4 class="info-box-title">💡 How to Use</h4>
+                                <ol class="info-list">
+                                    <li>Enter your email and password</li>
+                                    <li>Click '🧪 Test Connection' to verify</li>
+                                    <li>Click '💾 Save Settings' to persist</li>
+                                    <li>Use '📥 Fetch Emails' to test retrieval</li>
+                                </ol>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast notification container -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <!-- Loading overlay -->
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <p class="loading-text">Processing...</p>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

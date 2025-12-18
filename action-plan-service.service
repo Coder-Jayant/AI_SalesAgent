@@ -1,0 +1,24 @@
+[Unit]
+Description=Action Plan Background Service
+After=network.target
+
+[Service]
+Type=simple
+# TODO: Replace 'salesagent' with your actual Linux username
+User=salesagent
+# TODO: Replace with your actual project path on Linux server
+WorkingDirectory=/home/salesagent/SalesAgent/SalesAgent15_/required_files_project
+Environment="ACTION_PLAN_SERVICE_INTERVAL=30"
+Environment="ACTION_PLAN_SERVICE_HANDS_FREE=false"
+Environment="ACTION_PLAN_SERVICE_LOG_LEVEL=INFO"
+# TODO: Replace with your actual Python virtual environment path
+ExecStart=/home/salesagent/SalesAgent/venv/bin/python /home/salesagent/SalesAgent/SalesAgent15_/required_files_project/action_plan_service.py
+Restart=on-failure
+RestartSec=5s
+
+# Logging
+StandardOutput=append:/home/salesagent/SalesAgent/SalesAgent15_/required_files_project/action_plan_service_stdout.log
+StandardError=append:/home/salesagent/SalesAgent/SalesAgent15_/required_files_project/action_plan_service_stderr.log
+
+[Install]
+WantedBy=multi-user.target

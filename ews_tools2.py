@@ -1,0 +1,1933 @@
+# ews_tools.py
+"""
+Final, production-ready EWS toolkit (updated)
+Tested: 2025-11-06 baseline; later fixes 2025-11-12
+Features:
+ - JSON-safe returns
+ - Calendar availability checks & free-slot finder
+ - Flexible mail filters & dynamic fetch helper
+ - Conversation/thread fetch and follow-up in-thread
+ - Credentials setter (UI driven)
+ - Current time helper
+ - read_email supports include_thread=True to return the whole thread
+"""
+
+from __future__ import annotations
+
+import os
+from typing import List, Dict, Any, Optional, Union
+from datetime import datetime, timedelta, timezone
+import difflib
+import logging
+
+from exchangelib import (
+    Account, Configuration, Credentials, DELEGATE,
+    Message, HTMLBody, Mailbox, FileAttachment, CalendarItem,
+    Attendee, EWSTimeZone, Q
+)
+
+# ───── CONFIG (env vars only; can be overwritten at runtime via set_credentials) ─────
+EMAIL = os.getenv("EWS_EMAIL", "sales-ai-agent@cyfuture.com")
+PASSWORD = os.getenv("EWS_PASSWORD", "JSDhut#$%36")
+EXCHANGE_HOST = os.getenv("EWS_HOST", "mail.cyfuture.com")
+
+HUMAN_SALES_EMAIL = os.getenv("HUMAN_SALES_EMAIL", "jayant.verma@cyfuture.com")
+DOWNLOAD_DIR = "./downloads"
+# ──────────────────────────────────
+
+_account: Optional[Account] = None
+_account_config: Optional[Configuration] = None
+
+
+def _conv_to_str(x) -> Optional[str]:
+    """Convert conversation-like objects to simple strings safe for JSON."""
+    if x is None:
+        return None
+    try:
+        return str(x)
+    except Exception:
+        try:
+            return getattr(x, "id", None) or getattr(x, "ConversationId", None) or None
+        except Exception:
+            return None
+
+def fetch_multiple_emails_with_threads(
+    item_ids: List[str],
+    changekeys: Optional[List[str]] = None,
+    include_threads: bool = True,
+    max_emails: int = 50
+) -> List[Dict[str, Any]]:
+    """
+    Fetch multiple emails with their full content and thread information in batch.
+    
+    Args:
+        item_ids: List of email item IDs to fetch
+        changekeys: Optional list of changekeys (must match item_ids length if provided)
+        include_threads: Whether to include full conversation threads for each email
+        max_emails: Safety limit on number of emails to fetch (default: 50)
+    
+    Returns:
+        List of email dictionaries with full content and threads
+    """
+    if not item_ids:
+        return []
+    
+    # Safety limit
+    item_ids = item_ids[:max_emails]
+    
+    # Validate changekeys length if provided
+    if changekeys and len(changekeys) != len(item_ids):
+        logging.warning(f"[fetch_multiple_emails_with_threads] changekeys length mismatch, ignoring")
+        changekeys = None
+    
+    account = _get_account()
+    results = []
+    
+    for idx, item_id in enumerate(item_ids):
+        try:
+            changekey = changekeys[idx] if changekeys else ""
+            
+            # Fetch the email
+            email_data = read_email(
+                item_id=item_id,
+                changekey=changekey,
+                include_thread=include_threads
+            )
+            
+            if "error" not in email_data:
+                results.append(email_data)
+            else:
+                logging.warning(f"[fetch_multiple_emails_with_threads] Failed to fetch {item_id}: {email_data.get('error')}")
+                results.append({
+                    "id": item_id,
+                    "error": email_data.get("error"),
+                    "skipped": True
+                })
+                
+        except Exception as e:
+            logging.exception(f"[fetch_multiple_emails_with_threads] Error fetching {item_id}")
+            results.append({
+                "id": item_id,
+                "error": str(e),
+                "skipped": True
+            })
+    
+    return results
+
+
+def fetch_emails_by_criteria_with_content(
+    sender_name_match_string: Optional[str] = None,
+    sender_mail_match_string: Optional[str] = None,
+    sender_domain_match_string: Optional[str] = None,
+    subject_match_string: Optional[str] = None,
+    read: Optional[bool] = None,
+    has_attachments: Optional[bool] = None,
+    date_from_iso: Optional[str] = None,
+    date_to_iso: Optional[str] = None,
+    limit: int = 20,
+    include_threads: bool = True,
+    include_body: bool = True,
+    fuzzy_threshold: float = 0.90
+) -> Dict[str, Any]:
+    """
+    Search for emails by criteria and fetch their full content and threads in one operation.
+    This combines filtering + full content retrieval for efficiency.
+    
+    Args:
+        sender_name_match_string: Partial sender name to match
+        sender_mail_match_string: Partial sender email to match
+        sender_domain_match_string: Sender domain to match
+        subject_match_string: Subject text to match
+        read: Filter by read status
+        has_attachments: Filter by attachment presence
+        date_from_iso: Start date (ISO format)
+        date_to_iso: End date (ISO format)
+        limit: Maximum emails to fetch (default: 20)
+        include_threads: Include full conversation threads
+        include_body: Include email body content
+        fuzzy_threshold: Fuzzy matching threshold (0-1)
+    
+    Returns:
+        Dict with metadata and list of full email contents
+    """
+    try:
+        # First, get matching email metadata
+        matches = get_messages_filtered(
+            sender_name_match_string=sender_name_match_string,
+            sender_mail_match_string=sender_mail_match_string,
+            sender_domain_match_string=sender_domain_match_string,
+            subject_match_string=subject_match_string,
+            read=read,
+            has_attachments=has_attachments,
+            date_from_iso=date_from_iso,
+            date_to_iso=date_to_iso,
+            limit=limit,
+            fuzzy_threshold=fuzzy_threshold
+        )
+        
+        if not matches:
+            return {
+                "total_found": 0,
+                "emails": [],
+                "metadata": {
+                    "criteria": {
+                        "sender_name": sender_name_match_string,
+                        "sender_email": sender_mail_match_string,
+                        "subject": subject_match_string
+                    }
+                }
+            }
+        
+        # Extract IDs and changekeys
+        item_ids = [m["id"] for m in matches]
+        changekeys = [m.get("changekey", "") for m in matches]
+        
+        # Fetch full content
+        full_emails = fetch_multiple_emails_with_threads(
+            item_ids=item_ids,
+            changekeys=changekeys,
+            include_threads=include_threads,
+            max_emails=limit
+        )
+        
+        # Filter out body if not requested
+        if not include_body:
+            for email in full_emails:
+                if not email.get("skipped"):
+                    email.pop("body_html", None)
+                    email.pop("body_text", None)
+                    email.pop("body", None)
+                    if "thread" in email:
+                        for thread_msg in email["thread"]:
+                            thread_msg.pop("body_html", None)
+                            thread_msg.pop("body_text", None)
+        
+        return {
+            "total_found": len(matches),
+            "total_fetched": len([e for e in full_emails if not e.get("skipped")]),
+            "emails": full_emails,
+            "metadata": {
+                "criteria": {
+                    "sender_name": sender_name_match_string,
+                    "sender_email": sender_mail_match_string,
+                    "sender_domain": sender_domain_match_string,
+                    "subject": subject_match_string,
+                    "read": read,
+                    "has_attachments": has_attachments
+                },
+                "include_threads": include_threads,
+                "include_body": include_body
+            }
+        }
+        
+    except Exception as e:
+        logging.exception("[fetch_emails_by_criteria_with_content] Failed")
+        return {
+            "error": str(e),
+            "total_found": 0,
+            "emails": []
+        }
+        
+def send_mail(
+    to_email: str,
+    subject: str,
+    body_html: str,
+    cc_recipients: Optional[List[str]] = None,
+    bcc_recipients: Optional[List[str]] = None,
+    attachments: Optional[List[str]] = None,
+    importance: str = "Normal",  # Normal, High, Low
+    save_as_draft: bool = False  # Save as draft instead of sending
+) -> str:
+    """
+    Send a new email message (standalone, not in-thread).
+    
+    Args:
+        to_email: Recipient email address (required)
+        subject: Email subject (required)
+        body_html: Email body in HTML format (required)
+        cc_recipients: List of CC email addresses
+        bcc_recipients: List of BCC email addresses
+        attachments: List of file paths to attach
+        importance: Email importance (Normal, High, Low)
+        save_as_draft: If True, save as draft instead of sending
+    
+    Returns:
+        str: Success or error message
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    if not to_email or not subject or not body_html:
+        return "[Error] to_email, subject, and body_html are required"
+    
+    if to_email.lower() == EMAIL.lower():
+        return "[Error] Cannot send email to self"
+    
+    try:
+        account = _get_account()
+        logger.info(f"[send_mail] Creating message to {to_email}")
+        
+        # Build recipient lists
+        to_list = [Mailbox(email_address=to_email)]
+        cc_list = [Mailbox(email_address=cc) for cc in (cc_recipients or []) if cc]
+        bcc_list = [Mailbox(email_address=bcc) for bcc in (bcc_recipients or []) if bcc]
+        
+        # Map importance
+        importance_map = {
+            "High": "High",
+            "Normal": "Normal",
+            "Low": "Low"
+        }
+        importance_val = importance_map.get(importance, 0)
+        
+        # Create message
+        msg = Message(
+            account=account,
+            subject=subject,
+            body=HTMLBody(body_html),
+            to_recipients=to_list,
+            cc_recipients=cc_list if cc_list else None,
+            bcc_recipients=bcc_list if bcc_list else None,
+            importance=importance_val
+        )
+        
+        # Attach files if provided
+        if attachments:
+            for file_path in attachments:
+                if os.path.isfile(file_path):
+                    try:
+                        with open(file_path, "rb") as f:
+                            msg.attach(FileAttachment(
+                                name=os.path.basename(file_path),
+                                content=f.read()
+                            ))
+                        logger.info(f"[send_mail] Attached: {file_path}")
+                    except Exception as e:
+                        logger.warning(f"[send_mail] Failed to attach {file_path}: {e}")
+                else:
+                    logger.warning(f"[send_mail] Attachment not found: {file_path}")
+        
+        # Send or save as draft
+        if save_as_draft:
+            msg.folder = account.drafts
+            msg.save()
+            logger.info(f"[send_mail] ✓ Draft saved for {to_email}")
+            return f"Draft saved successfully for {to_email}"
+        else:
+            msg.send()
+            logger.info(f"[send_mail] ✓ Message sent to {to_email}")
+            return f"Email sent successfully to {to_email}"
+        
+    except Exception as e:
+        logger.exception(f"[send_mail] Failed to send to {to_email}")
+        return f"[Error sending email] {type(e).__name__}: {str(e)}"
+def _get_account() -> Account:
+    """Return cached Account or initialize from EMAIL/PASSWORD/env (raises ValueError if missing creds)."""
+    global _account, _account_config, EMAIL, PASSWORD, EXCHANGE_HOST
+    if _account is None:
+        if not EMAIL or not PASSWORD:
+            raise ValueError("Set EWS_EMAIL and EWS_PASSWORD env vars or call set_credentials().")
+        creds = Credentials(username=EMAIL, password=PASSWORD)
+        config = Configuration(server=EXCHANGE_HOST, credentials=creds)
+        _account_config = config
+        _account = Account(
+            primary_smtp_address=EMAIL,
+            config=config,
+            autodiscover=False,
+            access_type=DELEGATE,
+        )
+    return _account
+
+
+def set_credentials(email: str, password: str, host: Optional[str] = None) -> str:
+    """
+    Set runtime EWS credentials and clear cached account.
+    Returns status string.
+    """
+    global EMAIL, PASSWORD, EXCHANGE_HOST, _account, _account_config
+    EMAIL = email or EMAIL
+    PASSWORD = password or PASSWORD
+    if host:
+        EXCHANGE_HOST = host
+    _account = None
+    _account_config = None
+    try:
+        _get_account()
+        return "Credentials set and account initialized."
+    except Exception as e:
+        return f"Failed to initialize account: {e}"
+
+
+# ====================== BATCH INBOX ======================
+def get_unread_batch(batch_size: int = 5) -> List[Dict[str, Any]]:
+    """
+    Return latest unread messages metadata (JSON-safe).
+    """
+    account = _get_account()
+    items = account.inbox.filter(is_read=False).order_by('-datetime_received')[:batch_size]
+    return [
+        {
+            "id": m.id,
+            "changekey": m.changekey,
+            "subject": m.subject or "(no subject)",
+            "sender_email": (m.sender and m.sender.email_address) or "",
+            "sender_name": (m.sender and (m.sender.name or m.sender.email_address)) or "",
+            "received": m.datetime_received.isoformat() if m.datetime_received else "",
+            "conversation_id": _conv_to_str(getattr(m, "conversation_id", None)),
+        }
+        for m in items
+    ]
+
+
+# ====================== READ EMAIL (with optional thread) ======================
+def read_email(item_id: str, changekey: str, include_thread: bool = False) -> Dict[str, Any]:
+    """
+    Fetch a message by id (and changekey) and return JSON-serializable fields.
+    If include_thread=True, also include 'thread' key with the conversation messages.
+    """
+    if not item_id:
+        return {"error": "item_id required"}
+    try:
+        if changekey:
+            msg = _get_account().inbox.get(id=item_id, changekey=changekey)
+        else:
+            msg = _get_account().inbox.get(id=item_id)
+    except Exception as e:
+        return {"error": f"Fetch failed: {str(e)}"}
+
+    if not isinstance(msg, Message):
+        return {"error": "Not a message"}
+
+    to_list = [r.email_address for r in (msg.to_recipients or [])]
+    cc_list = [r.email_address for r in (msg.cc_recipients or [])]
+    bcc_list = [r.email_address for r in (msg.bcc_recipients or [])]
+
+    body_html = str(msg.body) if msg.body is not None else ""
+    body_text = msg.text_body or ""
+    body = body_text or body_html or ""
+
+    res = {
+        "id": msg.id,
+        "changekey": msg.changekey,
+        "subject": msg.subject or "(no subject)",
+        "body_html": body_html,
+        "body_text": body_text,
+        "body": body,
+        "sender": {"name": msg.sender.name if msg.sender else "", "email": msg.sender.email_address if msg.sender else ""},
+        "to": to_list,
+        "cc": cc_list,
+        "bcc": bcc_list,
+        "has_attachments": bool(msg.has_attachments),
+        "attachments": [
+            {
+                "name": a.name,
+                "size": getattr(a, "size", None),
+                "attachment_id": getattr(a.attachment_id, "id", None),
+                "is_inline": getattr(a, "is_inline", False)
+            }
+            for a in (msg.attachments or [])
+        ],
+        "datetime_received": msg.datetime_received.isoformat() if msg.datetime_received else None,
+        "conversation_id": _conv_to_str(getattr(msg, "conversation_id", None)),
+    }
+
+    if include_thread:
+        convo = getattr(msg, "conversation_id", None)
+        if convo:
+            try:
+                items = _get_account().inbox.filter(conversation_id=convo).order_by('datetime_received')
+                thread = []
+                for m in items:
+                    thread.append({
+                        "id": m.id,
+                        "changekey": m.changekey,
+                        "subject": m.subject,
+                        "body_text": getattr(m, "text_body", None) or "",
+                        "body_html": str(getattr(m, "body", "")) or "",
+                        "sender_email": (m.sender and getattr(m.sender, "email_address", None)) or "",
+                        "sender_name": (m.sender and getattr(m.sender, "name", None)) or "",
+                        "received": m.datetime_received.isoformat() if m.datetime_received else None,
+                        "is_read": bool(m.is_read),
+                        "conversation_id": _conv_to_str(getattr(m, "conversation_id", None)),
+                    })
+                res["thread"] = thread
+            except Exception:
+                res["thread"] = []
+        else:
+            res["thread"] = [res]  # single message as thread
+    return res
+
+
+# ====================== MARK READ / IGNORE ======================
+def mark_as_read(item_id: str, changekey: str, move_to: Optional[str] = None) -> str:
+    account = _get_account()
+    try:
+        msg = account.inbox.get(id=item_id, changekey=changekey)
+    except:
+        msg = account.inbox.get(id=item_id)  # fallback to latest changekey
+    msg.is_read = True
+    if move_to:
+        well_known = {
+            "Junk Email": account.junk,
+            "Deleted Items": account.trash,
+            "Sent Items": account.sent,
+        }
+        target = well_known.get(move_to)
+        if not target:
+            try:
+                target = account.root / move_to
+            except:
+                target = None
+        if target:
+            try:
+                msg.move(to_folder=target)
+            except:
+                msg.save()
+        else:
+            msg.save()
+    else:
+        msg.save()
+    return f"Marked read{(' to ' + move_to) if move_to else ''}"
+
+
+def ignore_and_mark_read(item_id: str, changekey: str) -> str:
+    """Move message to Junk and mark read."""
+    return mark_as_read(item_id, changekey, move_to="Junk Email")
+
+
+# ====================== REPLY (SAFE) & in-thread follow-up ======================
+
+def _build_quoted_original(original_message) -> str:
+    """Build properly formatted quoted original message for replies."""
+    sender_name = original_message.sender.name if (original_message.sender and original_message.sender.name) else (original_message.sender.email_address if original_message.sender else "Unknown")
+    sender_email = original_message.sender.email_address if original_message.sender else "Unknown"
+    received_date = original_message.datetime_received.strftime('%A, %B %d, %Y %I:%M %p') if original_message.datetime_received else "Unknown"
+    original_subject = original_message.subject or "(no subject)"
+    
+    # Get original body content (prefer text_body, fallback to body)
+    if hasattr(original_message, 'text_body') and original_message.text_body:
+        original_body = original_message.text_body
+    elif hasattr(original_message, 'body'):
+        original_body = str(original_message.body) if original_message.body else ""
+    else:
+        original_body = ""
+    
+    # Create quoted original message in standard email format
+    return f"""
+<hr style="border: none; border-top: 1px solid #ccc; margin: 20px 0;">
+<div style="font-family: Arial, sans-serif; font-size: 12px; color: #666;">
+    <p style="margin: 5px 0;"><strong>From:</strong> {sender_name} <{sender_email}></p>
+    <p style="margin: 5px 0;"><strong>Sent:</strong> {received_date}</p>
+    <p style="margin: 5px 0;"><strong>Subject:</strong> {original_subject}</p>
+</div>
+<br>
+<blockquote style="border-left: 3px solid #ccc; padding-left: 10px; margin-left: 10px; color: #666;">
+    {original_body}
+</blockquote>
+"""
+
+
+def reply_to_email(
+    item_id: str,
+    changekey: str,
+    body_html: str,
+    cc_recipients: Optional[List[str]] = None,
+    bcc_recipients: Optional[List[str]] = None,
+    attachments: Optional[List[str]] = None,
+    save_as_draft: bool = False
+) -> str:
+    """
+    Reply inline to a message (in-thread). Uses create_reply on the original message.
+    
+    Args:
+        item_id: Email item ID
+        changekey: Email changekey
+        body_html: HTML body for reply
+        cc_recipients: Optional list of CC email addresses to include in reply
+        bcc_recipients: Optional list of BCC email addresses to include in reply
+        attachments: Optional file paths to attach
+        save_as_draft: If True, save reply as draft instead of sending
+    """
+    
+    account = _get_account()
+    try:
+        original = account.inbox.get(id=item_id, changekey=changekey) if changekey else account.inbox.get(id=item_id)
+    except:
+        original = account.inbox.get(id=item_id)
+
+    # For drafts, create a regular Message (ReplyToItem doesn't support folder)
+    if save_as_draft:
+        # Build quoted original (used ONLY for drafts)
+        quoted_original = _build_quoted_original(original)
+        full_body_html = body_html + quoted_original
+        
+        original_subject = original.subject or "(no subject)"
+        
+        # Build CC/BCC lists
+        cc_list = [Mailbox(email_address=cc) for cc in (cc_recipients or []) if cc]
+        bcc_list = [Mailbox(email_address=bcc) for bcc in (bcc_recipients or []) if bcc]
+        
+        # Create draft message
+        draft_msg = Message(
+            account=account,
+            folder=account.drafts,
+            subject=f"Re: {original_subject}".replace("Re: Re:", "Re:"),
+            body=HTMLBody(full_body_html),
+            to_recipients=[original.sender],
+            cc_recipients=cc_list if cc_list else None,
+            bcc_recipients=bcc_list if bcc_list else None
+        )
+        
+        # ✅ CRITICAL FIX: Set threading headers AFTER message creation
+        # Get message ID from original (try multiple attributes)
+        message_id = None
+        if hasattr(original, 'message_id') and original.message_id:
+            message_id = original.message_id
+        elif hasattr(original, 'internet_message_id') and original.internet_message_id:
+            message_id = original.internet_message_id
+        
+        # Build references chain
+        references = None
+        if hasattr(original, 'references') and original.references:
+            # Original has references, append message_id
+            if message_id:
+                references = f"{original.references} {message_id}"
+            else:
+                references = original.references
+        elif message_id:
+            # No prior references, start with message_id
+            references = message_id
+        
+        # Set threading headers
+        if message_id:
+            draft_msg.in_reply_to = message_id
+        if references:
+            draft_msg.references = references
+        
+        # Set conversation index and topic for Exchange threading
+        if hasattr(original, 'conversation_index') and original.conversation_index:
+            draft_msg.conversation_index = original.conversation_index
+        if hasattr(original, 'conversation_topic') and original.conversation_topic:
+            draft_msg.conversation_topic = original.conversation_topic
+        
+        # Attach files
+        if attachments:
+            for path in attachments:
+                if os.path.isfile(path):
+                    with open(path, "rb") as f:
+                        draft_msg.attach(FileAttachment(name=os.path.basename(path), content=f.read()))
+        
+        draft_msg.save()
+        return f"Reply draft saved for email: {original.subject} (with threading headers and quoted original)"
+    else:
+        # ✅ FIX: Normal reply - DON'T add quoted original manually
+        # create_reply() automatically includes the original message as a quote in Exchange
+        # Adding it manually causes duplicate quoted content
+        reply = original.create_reply(subject=original.subject, body=HTMLBody(body_html))
+        
+        # Add CC/BCC recipients if provided
+        if cc_recipients:
+            cc_list = [Mailbox(email_address=cc) for cc in cc_recipients if cc]
+            if cc_list:
+                reply.cc_recipients = cc_list
+        
+        if bcc_recipients:
+            bcc_list = [Mailbox(email_address=bcc) for bcc in bcc_recipients if bcc]
+            if bcc_list:
+                reply.bcc_recipients = bcc_list
+        
+        # Attach files
+        if attachments:
+            for path in attachments:
+                if os.path.isfile(path):
+                    with open(path, "rb") as f:
+                        reply.attach(FileAttachment(name=os.path.basename(path), content=f.read()))
+        
+        reply.send()
+        
+        # Mark original as read
+        try:
+            original = account.inbox.get(id=item_id)
+            original.is_read = True
+            original.save()
+        except:
+            pass
+        
+        return "Replied (in-thread) and marked read"
+
+
+
+def follow_up_thread(item_id: str, changekey: str, body_html: str) -> str:
+    """
+    Reply to the latest message in the same conversation thread.
+    """
+    thread = get_conversation_thread(item_id=item_id, changekey=changekey)
+    if not thread:
+        return "No thread found."
+    latest = thread[-1]
+    try:
+        return reply_to_email(item_id=latest["id"], changekey=latest.get("changekey", ""), body_html=body_html, attachments=None)
+    except Exception as e:
+        return f"Follow-up reply failed: {e}"
+
+
+# ====================== FOLLOW-UP (outsent mail) ======================
+def send_follow_up(
+    to_email: str, 
+    subject: str, 
+    body_html: str,
+    save_as_draft: bool = False
+) -> str:
+    """
+    Send a new message (not in-thread) or save as draft.
+    
+    Args:
+        save_as_draft: If True, save as draft instead of sending
+    """
+    if to_email == EMAIL:
+        return f"Can't send mail to self!"
+    m = Message(
+        account=_get_account(),
+        subject=subject,
+        body=HTMLBody(body_html),
+        to_recipients=[Mailbox(email_address=to_email)],
+    )
+    # Send or save as draft
+    if save_as_draft:
+        m.folder = _get_account().drafts
+        m.save()
+        return f"Follow-up draft saved for {to_email}"
+    else:
+        m.send()
+        return f"Follow-up sent to {to_email}"
+
+
+# ====================== ESCALATE ======================
+def escalate_to_human(item_id: str, changekey: str, reason: str) -> str:
+    account = _get_account()
+    try:
+        msg = account.inbox.get(id=item_id, changekey=changekey)
+    except:
+        msg = account.inbox.get(id=item_id)
+
+    note = f"<p><strong>AI Escalation:</strong> {reason}</p><hr>"
+    fwd = msg.create_forward(
+        subject=msg.subject,
+        body=HTMLBody(note + str(msg.body)),
+        to_recipients=[Mailbox(email_address=HUMAN_SALES_EMAIL)],
+    )
+
+    fwd.send()
+
+    try:
+        msg.is_read = True
+        msg.save()
+    except:
+        pass
+
+    return f"Escalated to {HUMAN_SALES_EMAIL}: {reason}"
+
+
+# ====================== CALENDAR & SCHEDULING ======================
+def get_calendar_items(range_start: datetime, range_end: datetime) -> List[Dict[str, Any]]:
+    """
+    Return calendar items between range_start and range_end (inclusive).
+    """
+    account = _get_account()
+    items = account.calendar.filter(start__range=(range_start, range_end)).order_by('start')
+    res = []
+    for it in items:
+        res.append({
+            "subject": it.subject,
+            "start": it.start.isoformat() if it.start else None,
+            "end": it.end.isoformat() if it.end else None,
+            "organizer": str(getattr(it, "organizer", None)),
+            "required_attendees": [str(getattr(a.mailbox, "email_address", None)) for a in (it.required_attendees or [])],
+        })
+    return res
+
+
+def is_slot_available(start_iso: str, duration_minutes: int = 30) -> bool:
+    """
+    Check if the account's calendar has any event overlapping the proposed slot.
+    """
+    tz = EWSTimeZone.localzone()
+    try:
+        start = datetime.fromisoformat(start_iso)
+    except Exception:
+        start = datetime.now(tz)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=tz)
+    end = start + timedelta(minutes=duration_minutes)
+    items = get_calendar_items(start - timedelta(minutes=1), end + timedelta(minutes=1))
+    return len(items) == 0
+
+
+def find_free_slots(
+    start_iso: str,
+    days: int = 7,
+    window_start_hour: int = 9,
+    window_end_hour: int = 18,
+    slot_minutes: int = 30,
+    max_slots: int = 5
+) -> List[str]:
+    """
+    Propose free slots between start_iso and start_iso + days.
+    Returns list of ISO datetimes (start times) for proposed slots.
+    """
+    tz = EWSTimeZone.localzone()
+    try:
+        start_dt = datetime.fromisoformat(start_iso)
+    except Exception:
+        start_dt = datetime.now(tz)
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=tz)
+
+    end_dt = start_dt + timedelta(days=days)
+    busy = get_calendar_items(start_dt, end_dt)
+    busy_ranges = []
+    for b in busy:
+        try:
+            s = datetime.fromisoformat(b["start"])
+            e = datetime.fromisoformat(b["end"])
+            busy_ranges.append((s, e))
+        except Exception:
+            continue
+
+    proposals = []
+    cur = start_dt
+    while cur < end_dt and len(proposals) < max_slots:
+        if window_start_hour <= cur.hour < window_end_hour:
+            slot_end = cur + timedelta(minutes=slot_minutes)
+            overlap = False
+            for s, e in busy_ranges:
+                if not (slot_end <= s or cur >= e):
+                    overlap = True
+                    break
+            if not overlap:
+                proposals.append(cur.isoformat())
+        cur = cur + timedelta(minutes=slot_minutes)
+        if cur.hour >= window_end_hour:
+            cur = (cur.replace(hour=window_start_hour, minute=0, second=0, microsecond=0)
+                   + timedelta(days=1))
+    return proposals
+
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
+def create_demo_meeting(
+    customer_email: str,
+    start_iso: str,
+    duration_minutes: int = 30,
+    notes: str = ""
+) -> str:
+    """
+    Create a calendar meeting and send invites. Accepts tz-aware or naive ISO.
+    Converts to UTC for EWS to avoid timezone key mapping issues.
+    """
+    account = _get_account()
+    try:
+        start = datetime.fromisoformat(start_iso)
+    except Exception:
+        start = datetime.now()
+    if start.tzinfo is None:
+        try:
+            if ZoneInfo:
+                start = start.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+            else:
+                start = start.replace(tzinfo=EWSTimeZone.localzone())
+        except Exception:
+            start = start.replace(tzinfo=timezone.utc)
+
+    end = start + timedelta(minutes=int(duration_minutes))
+    start_utc = start.astimezone(timezone.utc)
+    end_utc = end.astimezone(timezone.utc)
+
+    meeting = CalendarItem(
+        account=account,
+        folder=account.calendar,
+        subject="Cyfuture Demo Call",
+        body=HTMLBody(notes or "Let’s explore how we can help."),
+        start=start_utc,
+        end=end_utc,
+        location="Google Meet",
+        required_attendees=[Attendee(mailbox=Mailbox(email_address=customer_email))],
+    )
+
+    # valid values: 'SendOnlyToAll', 'SendToAllAndSaveCopy', 'SendToNone'
+    meeting.save(send_meeting_invitations='SendToAllAndSaveCopy')
+    return f"Demo scheduled: {start.isoformat()} with {customer_email}"
+
+
+def schedule_meeting_with_check(
+    customer_email: str,
+    start_iso: str,
+    duration_minutes: int = 30,
+    notes: str = "",
+    auto_send_confirmation: bool = True,
+) -> str:
+    """
+    Check availability, schedule if free, and optionally send confirmation in-thread.
+    """
+    if not is_slot_available(start_iso, duration_minutes):
+        return "Slot unavailable: conflict detected."
+
+    res = create_demo_meeting(
+        customer_email=customer_email,
+        start_iso=start_iso,
+        duration_minutes=duration_minutes,
+        notes=notes,
+    )
+
+    if auto_send_confirmation:
+        try:
+            send_follow_up(customer_email, subject="Demo Confirmed - Cyfuture", body_html=f"<p>Confirmed: {res}</p>")
+        except Exception:
+            pass
+
+    return res
+
+
+def send_ical_invite(
+    customer_email: str,
+    start_iso: str,
+    duration_minutes: int = 30,
+    subject: str = "Cyfuture Demo Call",
+    body_html: str = None,
+    organizer_email: Optional[str] = None,
+) -> str:
+    """
+    Send a calendar invite as an .ics attachment (METHOD:REQUEST).
+    Robust fallback when EWS invites don't reach recipients.
+    """
+    if customer_email == EMAIL:
+        return f"Can't send mail to self!"
+    import uuid
+    try:
+        try:
+            dtstart = datetime.fromisoformat(start_iso)
+        except Exception:
+            dtstart = datetime.now(EWSTimeZone.localzone())
+
+        if dtstart.tzinfo is None:
+            try:
+                from zoneinfo import ZoneInfo
+                dtstart = dtstart.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+            except Exception:
+                dtstart = dtstart.replace(tzinfo=timezone.utc)
+        dtend = dtstart + timedelta(minutes=int(duration_minutes))
+        dtstart_utc = dtstart.astimezone(timezone.utc)
+        dtend_utc = dtend.astimezone(timezone.utc)
+
+        uid = str(uuid.uuid4())
+        dtstamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dtstart_s = dtstart_utc.strftime("%Y%m%dT%H%M%SZ")
+        dtend_s = dtend_utc.strftime("%Y%m%dT%H%M%SZ")
+        organizer = organizer_email or EMAIL or _get_account().primary_smtp_address
+
+        ics = (
+            "BEGIN:VCALENDAR\r\n"
+            "PRODID:-//Cyfuture//SalesAgent//EN\r\n"
+            "VERSION:2.0\r\n"
+            "CALSCALE:GREGORIAN\r\n"
+            "METHOD:REQUEST\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{uid}\r\n"
+            f"DTSTAMP:{dtstamp}\r\n"
+            f"DTSTART:{dtstart_s}\r\n"
+            f"DTEND:{dtend_s}\r\n"
+            f"SUMMARY:{subject}\r\n"
+            f"ORGANIZER:mailto:{organizer}\r\n"
+            f"ATTENDEE;CN=Attendee;RSVP=TRUE:mailto:{customer_email}\r\n"
+            "SEQUENCE:0\r\n"
+            "PRIORITY:5\r\n"
+            "CLASS:PUBLIC\r\n"
+            "TRANSP:OPAQUE\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+
+        msg = Message(
+            account=_get_account(),
+            subject=subject,
+            body=HTMLBody(body_html or f"<p>Hi — I've scheduled a meeting for {dtstart.isoformat()}.</p>"),
+            to_recipients=[Mailbox(email_address=customer_email)],
+        )
+
+        attachment = FileAttachment(name="invite.ics", content=ics.encode("utf-8"))
+        msg.attach(attachment)
+        msg.send()
+        return f"Sent ICS invite to {customer_email} (UID={uid})"
+    except Exception as e:
+        return f"[Error] send_ical_invite failed: {e}"
+
+
+# ====================== MAIL FILTERS (NEW) ======================
+# def get_messages_filtered(
+#     sender_name: Optional[str] = None,
+#     sender_domain: Optional[str] = None,
+#     read: Optional[bool] = None,
+#     date_from_iso: Optional[str] = None,
+#     date_to_iso: Optional[str] = None,
+#     subject_contains: Optional[str] = None,
+#     has_attachments: Optional[bool] = None,
+#     limit: int = 50
+# ) -> List[Dict[str, Any]]:
+#     """
+#     Flexible message fetcher with multiple filters. Returns list of message metadata.
+#     """
+#     account = _get_account()
+#     qs = account.inbox.all()
+#     q_filters = []
+#     if read is not None:
+#         q_filters.append(Q(is_read=bool(read)))
+#     if subject_contains:
+#         q_filters.append(Q(subject__contains=subject_contains))
+#     if date_from_iso:
+#         try:
+#             d = datetime.fromisoformat(date_from_iso)
+#             q_filters.append(Q(datetime_received__gte=d))
+#         except Exception:
+#             pass
+#     if date_to_iso:
+#         try:
+#             d2 = datetime.fromisoformat(date_to_iso)
+#             q_filters.append(Q(datetime_received__lte=d2))
+#         except Exception:
+#             pass
+
+#     if q_filters:
+#         comb = q_filters[0]
+#         for q in q_filters[1:]:
+#             comb = comb & q
+#         qs = account.inbox.filter(comb)
+
+#     results = []
+#     for m in qs.order_by('-datetime_received')[:limit]:
+#         sender_email = (m.sender and getattr(m.sender, "email_address", None)) or ""
+#         sender_nm = (m.sender and getattr(m.sender, "name", None)) or ""
+#         if sender_name and sender_name.lower() not in (sender_nm or "").lower() and sender_name.lower() not in (sender_email or "").lower():
+#             continue
+#         if sender_domain and ("@" + sender_domain.lower()) not in sender_email.lower():
+#             continue
+#         if has_attachments is not None and bool(m.has_attachments) != bool(has_attachments):
+#             continue
+
+#         results.append({
+#             "id": m.id,
+#             "changekey": m.changekey,
+#             "subject": m.subject,
+#             "sender_email": sender_email,
+#             "sender_name": sender_nm,
+#             "received": m.datetime_received.isoformat() if m.datetime_received else None,
+#             "is_read": bool(m.is_read),
+#             "has_attachments": bool(m.has_attachments),
+#             "conversation_id": _conv_to_str(getattr(m, "conversation_id", None)),
+#         })
+#     return results
+import difflib  # add at top of file with other imports
+
+def _fuzzy_ratio(a: str, b: str) -> float:
+    try:
+        if not a or not b:
+            return 0.0
+        return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
+    except Exception:
+        return 0.0
+
+
+# def get_messages_filtered(
+#     sender_name: Optional[str] = None,
+#     sender_domain: Optional[str] = None,
+#     read: Optional[bool] = None,
+#     date_from_iso: Optional[str] = None,
+#     date_to_iso: Optional[str] = None,
+#     subject_contains: Optional[str] = None,
+#     has_attachments: Optional[bool] = None,
+#     limit: int = 50,
+#     # new/fuzzy options
+#     sender_query: Optional[str] = None,
+#     subject_query: Optional[str] = None,
+#     body_query: Optional[str] = None,
+#     fuzzy_threshold: float = 0.70,
+# ) -> List[Dict[str, Any]]:
+#     """
+#     Flexible message fetcher with fuzzy/substring search support.
+
+#     New params:
+#       - sender_query: fuzzy/substring query applied to sender name and sender email.
+#       - subject_query: fuzzy/substring query applied to subject.
+#       - body_query: fuzzy/substring query applied to message body (text_body or HTML fallback).
+#       - fuzzy_threshold: value 0..1 for fuzzy SequenceMatcher ratio fallback (default 0.70).
+
+#     Behavior:
+#       - Substring (case-insensitive) checks are tried first (fast).
+#       - If substring doesn't match, a fuzzy similarity check is used (difflib.SequenceMatcher).
+#       - Combining filters acts as AND: all non-empty filters must pass.
+#     """
+#     account = _get_account()
+#     qs = account.inbox.all()
+#     q_filters = []
+#     if read is not None:
+#         q_filters.append(Q(is_read=bool(read)))
+#     if subject_contains:
+#         # keep existing subject__contains for faster server-side filtering if provided
+#         q_filters.append(Q(subject__contains=subject_contains))
+#     if date_from_iso:
+#         try:
+#             d = datetime.fromisoformat(date_from_iso)
+#             q_filters.append(Q(datetime_received__gte=d))
+#         except Exception:
+#             pass
+#     if date_to_iso:
+#         try:
+#             d2 = datetime.fromisoformat(date_to_iso)
+#             q_filters.append(Q(datetime_received__lte=d2))
+#         except Exception:
+#             pass
+
+#     if q_filters:
+#         comb = q_filters[0]
+#         for q in q_filters[1:]:
+#             comb = comb & q
+#         qs = account.inbox.filter(comb)
+
+#     results = []
+#     # we implement an in-Python filter loop to support fuzzy and body-query checks.
+#     # limit the number of fetched items from server to some reasonable prefetch (e.g., limit*4)
+#     prefetch = max(limit * 4, limit + 50)
+#     try:
+#         iterable = qs.order_by('-datetime_received')[:prefetch]
+#     except Exception:
+#         iterable = qs.order_by('-datetime_received')
+
+#     sq = (sender_query or sender_name or "").strip()
+#     subj_q = (subject_query or subject_contains or "").strip()
+#     body_q = (body_query or "").strip()
+#     thr = float(fuzzy_threshold or 0.7)
+
+#     for m in iterable:
+#         try:
+#             sender_email = (m.sender and getattr(m.sender, "email_address", None)) or ""
+#             sender_nm = (m.sender and getattr(m.sender, "name", None)) or ""
+#             subject = m.subject or ""
+#             received_iso = m.datetime_received.isoformat() if m.datetime_received else None
+
+#             # Basic quick filters (always applied)
+#             if sender_name and sender_name.lower() not in (sender_nm or "").lower() and sender_name.lower() not in (sender_email or "").lower():
+#                 continue
+#             if sender_domain and ("@" + sender_domain.lower()) not in (sender_email or "").lower():
+#                 continue
+#             if has_attachments is not None and bool(m.has_attachments) != bool(has_attachments):
+#                 continue
+
+#             # Fuzzy sender query: first substring, then fuzzy similarity
+#             if sq:
+#                 sq_l = sq.lower()
+#                 if sq_l not in (sender_nm or "").lower() and sq_l not in (sender_email or "").lower():
+#                     # fallback to fuzzy
+#                     name_ratio = _fuzzy_ratio(sender_nm, sq)
+#                     email_ratio = _fuzzy_ratio(sender_email, sq)
+#                     if max(name_ratio, email_ratio) < thr:
+#                         continue
+
+#             # Subject query: substring then fuzzy
+#             if subj_q:
+#                 subj_l = subj_q.lower()
+#                 if subj_l not in (subject or "").lower():
+#                     subj_ratio = _fuzzy_ratio(subject or "", subj_q)
+#                     if subj_ratio < thr:
+#                         continue
+
+#             # Body query: this is heavier because it requires reading message body.
+#             if body_q:
+#                 # prefer text_body, else try msg.body string
+#                 body_text = (getattr(m, "text_body", None) or "")
+#                 if not body_text:
+#                     # some exchangelib Message body is complex; convert to str
+#                     try:
+#                         body_text = str(getattr(m, "body", "") or "")
+#                     except Exception:
+#                         body_text = ""
+#                 if body_q.lower() not in body_text.lower():
+#                     body_ratio = _fuzzy_ratio(body_text[:2000], body_q)  # limit length for speed
+#                     if body_ratio < thr:
+#                         continue
+
+#             # Passed all filters — append metadata
+#             results.append({
+#                 "id": m.id,
+#                 "changekey": m.changekey,
+#                 "subject": subject,
+#                 "sender_email": sender_email,
+#                 "sender_name": sender_nm,
+#                 "received": received_iso,
+#                 "is_read": bool(m.is_read),
+#                 "has_attachments": bool(m.has_attachments),
+#                 "conversation_id": _conv_to_str(getattr(m, "conversation_id", None)),
+#             })
+#             if len(results) >= int(limit):
+#                 break
+#         except Exception:
+#             # skip problematic message but keep scanning
+#             continue
+
+#     return results
+def _fuzzy_ratio(a: str, b: str) -> float:
+    try:
+        if not a or not b:
+            return 0.0
+        return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
+    except Exception:
+        return 0.0
+
+
+def get_messages_filtered(
+    # renamed and LLM-friendly match-strings (allows partial strings)
+    sender_name_match_string: Optional[str] = None,
+    sender_mail_match_string: Optional[str] = None,
+    sender_domain_match_string: Optional[str] = None,
+
+    recipient_name_match_string: Optional[str] = None,
+    recipient_mail_match_string: Optional[str] = None,
+
+    # subject/body
+    subject_match_string: Optional[str] = None,
+    body_match_string: Optional[str] = None,
+
+    # legacy/simple filters
+    read: Optional[bool] = None,
+    date_from_iso: Optional[str] = None,
+    date_to_iso: Optional[str] = None,
+    has_attachments: Optional[bool] = None,
+
+    # fuzzy controls + paging
+    fuzzy_threshold: float = 0.90,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """
+    Flexible message fetcher with substring + fuzzy matching using match-string params.
+    - *_match_string fields accept partial strings (LLM can send 'anuj' or 'jay').
+    - Matching order: server-side quick filters (date/read) -> substring checks -> fuzzy fallback.
+    - recipient_* fields match To/CC/BCC recipients.
+    """
+    account = _get_account()
+    qs = account.inbox.all()
+    q_filters = []
+    if read is not None:
+        q_filters.append(Q(is_read=bool(read)))
+    if date_from_iso:
+        try:
+            d = datetime.fromisoformat(date_from_iso)
+            q_filters.append(Q(datetime_received__gte=d))
+        except Exception:
+            pass
+    if date_to_iso:
+        try:
+            d2 = datetime.fromisoformat(date_to_iso)
+            q_filters.append(Q(datetime_received__lte=d2))
+        except Exception:
+            pass
+
+    # Apply server-side filters when available
+    if q_filters:
+        comb = q_filters[0]
+        for q in q_filters[1:]:
+            comb = comb & q
+        qs = account.inbox.filter(comb)
+
+    results = []
+    prefetch = max(limit * 4, limit + 50)
+    try:
+        iterable = qs.order_by('-datetime_received')[:prefetch]
+    except Exception:
+        iterable = qs.order_by('-datetime_received')
+
+    # normalize queries
+    s_name_q = (sender_name_match_string or "").strip()
+    s_mail_q = (sender_mail_match_string or "").strip()
+    s_domain_q = (sender_domain_match_string or "").strip()
+    r_name_q = (recipient_name_match_string or "").strip()
+    r_mail_q = (recipient_mail_match_string or "").strip()
+    subj_q = (subject_match_string or "").strip()
+    body_q = (body_match_string or "").strip()
+    thr = float(fuzzy_threshold or 0.90)
+
+    for m in iterable:
+        try:
+            sender_email = (m.sender and getattr(m.sender, "email_address", None)) or ""
+            sender_nm = (m.sender and getattr(m.sender, "name", None)) or ""
+            subject = m.subject or ""
+            received_iso = m.datetime_received.isoformat() if m.datetime_received else None
+
+            # quick attribute filters
+            if has_attachments is not None and bool(m.has_attachments) != bool(has_attachments):
+                continue
+
+            # Sender domain quick check
+            if s_domain_q:
+                if ("@" + s_domain_q.lower()) not in sender_email.lower():
+                    continue
+
+            # Sender name/email match (substring then fuzzy)
+            if s_name_q or s_mail_q:
+                ok = False
+                if s_name_q and s_name_q.lower() in (sender_nm or "").lower():
+                    ok = True
+                if s_mail_q and s_mail_q.lower() in (sender_email or "").lower():
+                    ok = True
+                if not ok:
+                    # fuzzy fallback: check similarity against both name and email
+                    name_ratio = _fuzzy_ratio(sender_nm, s_name_q) if s_name_q else 0.0
+                    mail_ratio = _fuzzy_ratio(sender_email, s_mail_q) if s_mail_q else 0.0
+                    if max(name_ratio, mail_ratio) < thr:
+                        continue
+
+            # Recipient matching (To/CC/BCC) - substring then fuzzy
+            if r_name_q or r_mail_q:
+                recipients = []
+                try:
+                    recipients.extend([r.email_address for r in (m.to_recipients or []) if getattr(r, "email_address", None)])
+                    recipients.extend([r.email_address for r in (m.cc_recipients or []) if getattr(r, "email_address", None)])
+                    recipients.extend([r.email_address for r in (m.bcc_recipients or []) if getattr(r, "email_address", None)])
+                except Exception:
+                    recipients = []
+                rec_matched = False
+                # substring email/name checks (email only for recipients here)
+                for rec in recipients:
+                    if r_mail_q and r_mail_q.lower() in (rec or "").lower():
+                        rec_matched = True
+                        break
+                if not rec_matched and r_name_q:
+                    # we don't always have recipient display names via simple attribute, so fuzzy against email string
+                    for rec in recipients:
+                        if _fuzzy_ratio(rec or "", r_name_q) >= thr:
+                            rec_matched = True
+                            break
+                if not rec_matched:
+                    continue
+
+            # Subject match (substring then fuzzy)
+            if subj_q:
+                if subj_q.lower() not in (subject or "").lower():
+                    if _fuzzy_ratio(subject or "", subj_q) < thr:
+                        continue
+
+            # Body match (heavy): try text_body then fallback to body string
+            if body_q:
+                body_text = (getattr(m, "text_body", None) or "")
+                if not body_text:
+                    try:
+                        body_text = str(getattr(m, "body", "") or "")
+                    except Exception:
+                        body_text = ""
+                if body_q.lower() not in body_text.lower():
+                    if _fuzzy_ratio(body_text[:2000], body_q) < thr:
+                        continue
+
+            # passed all checks -> append
+            results.append({
+                "id": m.id,
+                "changekey": m.changekey,
+                "subject": subject,
+                "sender_email": sender_email,
+                "sender_name": sender_nm,
+                "received": received_iso,
+                "is_read": bool(m.is_read),
+                "has_attachments": bool(m.has_attachments),
+                "conversation_id": _conv_to_str(getattr(m, "conversation_id", None)),
+            })
+            if len(results) >= int(limit):
+                break
+        except Exception:
+            continue
+
+    return results
+
+
+# ====================== THREAD / CONVERSATION (NEW) ======================
+def get_conversation_thread(item_id: str, changekey: str) -> List[Dict[str, Any]]:
+    """
+    Return messages that share the same conversation_id as the given message (ordered by receive time).
+    """
+    try:
+        original = _get_account().inbox.get(id=item_id, changekey=changekey) if changekey else _get_account().inbox.get(id=item_id)
+    except Exception:
+        try:
+            original = _get_account().inbox.get(id=item_id)
+        except Exception:
+            return []
+    convo = getattr(original, "conversation_id", None)
+    if not convo:
+        one = read_email(item_id, changekey)
+        return [one] if isinstance(one, dict) else []
+    try:
+        items = _get_account().inbox.filter(conversation_id=convo).order_by('datetime_received')
+    except Exception:
+        items = []
+        try:
+            for m in _get_account().inbox.all().order_by('datetime_received')[:2000]:
+                if _conv_to_str(getattr(m, "conversation_id", None)) == _conv_to_str(convo):
+                    items.append(m)
+        except Exception:
+            items = []
+    res = []
+    for m in items:
+        res.append({
+            "id": m.id,
+            "changekey": m.changekey,
+            "subject": m.subject,
+            "body_text": getattr(m, "text_body", None) or "",
+            "body_html": str(getattr(m, "body", "")) or "",
+            "sender_email": (m.sender and getattr(m.sender, "email_address", None)) or "",
+            "sender_name": (m.sender and getattr(m.sender, "name", None)) or "",
+            "received": m.datetime_received.isoformat() if m.datetime_received else None,
+            "is_read": bool(m.is_read),
+            "conversation_id": _conv_to_str(getattr(m, "conversation_id", None)),
+        })
+    return res
+
+
+def find_unresponded_threads(
+    days: int = 0,
+    limit: int = 100,
+    only_external: bool = True
+) -> List[Dict[str, Any]]:
+    """
+    Find conversation threads where our account sent the last message and no external reply
+    has been received within `days` days. Returns list of thread summaries.
+    """
+    account = _get_account()
+    try:
+        tz = EWSTimeZone.localzone()
+    except Exception:
+        tz = None
+
+    now_t = datetime.now(tz) if tz else datetime.utcnow()
+    cutoff = now_t - timedelta(days=int(days))
+
+    pool_size = max(500, limit * 5)
+    try:
+        sent_msgs = list(account.sent.all().order_by('-datetime_sent')[:pool_size])
+    except Exception:
+        try:
+            sent_msgs = list(account.sent.all())
+        except Exception:
+            sent_msgs = []
+
+    our_email_lower = (EMAIL or "").lower()
+    results: List[Dict[str, Any]] = []
+    seen_convos = set()
+
+    for s in sent_msgs:
+        try:
+            convo = getattr(s, "conversation_id", None)
+            if not convo:
+                continue
+            convo_key = _conv_to_str(convo)
+            if not convo_key or convo_key in seen_convos:
+                continue
+            seen_convos.add(convo_key)
+
+            last_sent_time = getattr(s, "datetime_sent", None)
+            if not last_sent_time:
+                continue
+
+            if last_sent_time > cutoff:
+                continue
+
+            try:
+                convo_inbox = list(account.inbox.filter(conversation_id=convo).order_by('datetime_received'))
+            except Exception:
+                convo_inbox = []
+                try:
+                    for m in account.inbox.all().order_by('datetime_received')[:2000]:
+                        if _conv_to_str(getattr(m, "conversation_id", None)) == convo_key:
+                            convo_inbox.append(m)
+                except Exception:
+                    convo_inbox = []
+
+            replied = False
+            external_email = ""
+            for r in convo_inbox:
+                rtime = getattr(r, "datetime_received", None)
+                if not rtime:
+                    continue
+                if rtime <= last_sent_time:
+                    continue
+                sender_email = (r.sender and getattr(r.sender, "email_address", "")) or ""
+                if sender_email:
+                    if our_email_lower not in sender_email.lower():
+                        replied = True
+                        external_email = sender_email
+                        break
+                    elif not only_external:
+                        replied = True
+                        external_email = sender_email
+                        break
+
+            if not replied:
+                try:
+                    inbox_conv = list(account.inbox.filter(conversation_id=convo))
+                    sent_conv = list(account.sent.filter(conversation_id=convo))
+                    thread_length = len(inbox_conv) + len(sent_conv)
+                except Exception:
+                    thread_length = 1
+
+                results.append({
+                    "subject": (s.subject or "").strip(),
+                    "conversation_id": convo_key,
+                    "last_message_time": last_sent_time.isoformat() if last_sent_time else "",
+                    "last_message_id": getattr(s, "id", None),
+                    "last_changekey": getattr(s, "changekey", None),
+                    "customer_email": external_email or "",
+                    "thread_length": int(thread_length),
+                })
+                if len(results) >= limit:
+                    break
+        except Exception:
+            continue
+
+    return results
+
+
+def follow_up_unresponded_thread(item_id: str, changekey: str, body_html: str) -> str:
+    """
+    Send a follow-up inside the conversation thread identified by item_id/changekey.
+    """
+    try:
+        return follow_up_thread(item_id=item_id, changekey=changekey, body_html=body_html)
+    except Exception as e:
+        return f"Follow-up in thread failed: {e}"
+
+
+def send_followup_to_customer(customer_email: str, subject: str, body_html: str) -> str:
+    """
+    Send a one-off follow-up message to customer_email (not in-thread).
+    """
+    try:
+        return send_follow_up(to_email=customer_email, subject=subject, body_html=body_html)
+    except Exception as e:
+        return f"Follow-up send failed: {e}"
+
+
+# ====================== TIME ======================
+def get_current_time(tz_name: Optional[str] = None) -> str:
+    """
+    Return current time as ISO string; tz_name optionally like 'Asia/Kolkata' or None for local.
+    """
+    try:
+        if tz_name:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(tz_name)
+            now = datetime.now(tz)
+        else:
+            now = datetime.now(EWSTimeZone.localzone())
+    except Exception:
+        now = datetime.now(timezone.utc)
+    return now.isoformat()
+
+
+# ====================== DOWNLOAD ATTACHMENTS ======================
+def download_attachments(item_id: str, changekey: str, download_dir: Optional[str] = None) -> List[str]:
+    if not download_dir:
+        download_dir = DOWNLOAD_DIR
+    os.makedirs(download_dir, exist_ok=True)
+    try:
+        msg = _get_account().inbox.get(id=item_id, changekey=changekey)
+    except Exception:
+        msg = _get_account().inbox.get(id=item_id)
+    saved = []
+    for a in (msg.attachments or []):
+        if isinstance(a, FileAttachment):
+            path = os.path.join(download_dir, a.name)
+            with open(path, "wb") as f:
+                f.write(a.content)
+            saved.append(path)
+    return saved
+
+
+# ====================== DYNAMIC FETCH (single entry for various strategies) ======================
+# def dynamic_mail_fetch(strategy: str = "unread", params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+#     """
+#     Single entrypoint for fetching mails. strategy can be:
+#       - 'unread' -> returns {"unread": [...]}
+#       - 'filtered' -> returns {"filtered": [...]}
+#       - 'unresponded' -> returns {"unresponded_threads": [...]}
+#     params: parameters for the chosen strategy (dict)
+#     """
+#     params = params or {}
+#     try:
+#         if strategy == "unread":
+#             batch = int(params.get("batch_size", 10))
+#             return {"unread": get_unread_batch(batch)}
+#         if strategy == "filtered":
+#             msgs = get_messages_filtered(
+#                 sender_name=params.get("sender_name"),
+#                 sender_domain=params.get("sender_domain"),
+#                 read=params.get("read"),
+#                 date_from_iso=params.get("date_from_iso"),
+#                 date_to_iso=params.get("date_to_iso"),
+#                 subject_contains=params.get("subject_contains"),
+#                 has_attachments=params.get("has_attachments"),
+#                 limit=int(params.get("limit", 50))
+#             )
+#             return {"filtered": msgs}
+#         if strategy == "unresponded":
+#             days = int(params.get("days", 0))
+#             limit = int(params.get("limit", 100))
+#             only_external = bool(params.get("only_external", True))
+#             return {"unresponded_threads": find_unresponded_threads(days=days, limit=limit, only_external=only_external)}
+#         return {"error": f"Unknown strategy '{strategy}'"}
+#     except Exception as e:
+#         return {"error": str(e)}
+# def dynamic_mail_fetch(strategy: str = "filtered", params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+#     """
+#     Single entrypoint for fetching mails. Backwards-compatible signature but prefer calling
+#     with explicit named args via the wrapper in main.py which builds `params` for you.
+
+#     Behavior (final design):
+#       - strategy parameter is accepted for backward compatibility but the wrapper will call 'filtered'.
+#       - The params dict may contain:
+#           - standard filter keys: sender_name, sender_domain, read, date_from_iso, date_to_iso,
+#             subject_contains, has_attachments, limit
+#           - convenience booleans: unread (True -> behave like get_unread_batch with batch_size)
+#           - convenience booleans: unresponded (True -> behave like find_unresponded_threads with days, only_external)
+#     """
+#     params = params or {}
+#     try:
+#         # If caller passed top-level flags explicitly (readable keys), respect them.
+#         # 1) unread branch: return unread batch
+#         if params.get("unread"):
+#             # allow specifying batch_size
+#             batch = int(params.get("batch_size", params.get("limit", 10)))
+#             return {"unread": get_unread_batch(batch)}
+
+#         # 2) unresponded branch: return unresponded threads summary
+#         if params.get("unresponded"):
+#             days = int(params.get("days", 0))
+#             limit = int(params.get("limit", 100))
+#             only_external = bool(params.get("only_external", True))
+#             return {"unresponded_threads": find_unresponded_threads(days=days, limit=limit, only_external=only_external)}
+
+#         # 3) Default: treat as filtered fetch using get_messages_filtered
+#         msgs = get_messages_filtered(
+#             sender_name=params.get("sender_name"),
+#             sender_domain=params.get("sender_domain"),
+#             read=params.get("read"),
+#             date_from_iso=params.get("date_from_iso"),
+#             date_to_iso=params.get("date_to_iso"),
+#             subject_contains=params.get("subject_contains"),
+#             has_attachments=params.get("has_attachments"),
+#             limit=int(params.get("limit", 50))
+#         )
+#         return {"filtered": msgs}
+#     except Exception as e:
+#         return {"error": str(e)}
+# def dynamic_mail_fetch(strategy: str = "filtered", params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+#     """
+#     Central fetch entrypoint. Prefer calling with strategy='filtered' and explicit params.
+#     Supports:
+#       - 'unread' via params['unread']=True (returns {"unread":[...]})
+#       - 'unresponded' via params['unresponded']=True (returns {"unresponded_threads":[...]})
+#       - default filtered search returns {"filtered":[...]} and accepts new fuzzy params:
+#          sender_query, subject_query, body_query, fuzzy_threshold
+#     """
+#     params = params or {}
+#     try:
+#         # unread convenience
+#         if params.get("unread"):
+#             batch = int(params.get("batch_size", params.get("limit", 10)))
+#             return {"unread": get_unread_batch(batch)}
+
+#         # unresponded convenience
+#         if params.get("unresponded"):
+#             days = int(params.get("days", 0))
+#             limit = int(params.get("limit", 100))
+#             only_external = bool(params.get("only_external", True))
+#             return {"unresponded_threads": find_unresponded_threads(days=days, limit=limit, only_external=only_external)}
+
+#         # filtered/fuzzy fetch
+#         msgs = get_messages_filtered(
+#             sender_name=params.get("sender_name"),
+#             sender_domain=params.get("sender_domain"),
+#             read=params.get("read"),
+#             date_from_iso=params.get("date_from_iso"),
+#             date_to_iso=params.get("date_to_iso"),
+#             subject_contains=params.get("subject_contains"),
+#             has_attachments=params.get("has_attachments"),
+#             limit=int(params.get("limit", 50)),
+#             # new fuzzy args
+#             sender_query=params.get("sender_query"),
+#             subject_query=params.get("subject_query"),
+#             body_query=params.get("body_query"),
+#             fuzzy_threshold=float(params.get("fuzzy_threshold", 0.70)),
+#         )
+#         return {"filtered": msgs}
+#     except Exception as e:
+#         return {"error": str(e)}
+def dynamic_mail_fetch(strategy: str = "filtered", params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Central fetch entrypoint. Prefer calling with strategy='filtered' and explicit params built by the wrapper.
+    Params accepted (examples):
+      - sender_name_match_string, sender_mail_match_string, sender_domain_match_string
+      - recipient_name_match_string, recipient_mail_match_string
+      - subject_match_string, body_match_string
+      - read, has_attachments, date_from_iso, date_to_iso, fuzzy_threshold, limit
+      - unread (bool) -> returns {"unread":[...]}
+      - unresponded (bool) -> returns {"unresponded_threads":[...]}
+    """
+    params = params or {}
+    try:
+        logging.info(f"[dynamic_mail_fetch] received params keys: {list(params.keys())}")
+
+        if params.get("unread"):
+            batch = int(params.get("batch_size", params.get("limit", 10)))
+            return {"unread": get_unread_batch(batch)}
+
+        if params.get("unresponded"):
+            days = int(params.get("days", 0))
+            limit = int(params.get("limit", 100))
+            only_external = bool(params.get("only_external", True))
+            return {"unresponded_threads": find_unresponded_threads(days=days, limit=limit, only_external=only_external)}
+
+        msgs = get_messages_filtered(
+            sender_name_match_string=params.get("sender_name_match_string"),
+            sender_mail_match_string=params.get("sender_mail_match_string"),
+            sender_domain_match_string=params.get("sender_domain_match_string"),
+            recipient_name_match_string=params.get("recipient_name_match_string"),
+            recipient_mail_match_string=params.get("recipient_mail_match_string"),
+            subject_match_string=params.get("subject_match_string"),
+            body_match_string=params.get("body_match_string"),
+            read=params.get("read"),
+            date_from_iso=params.get("date_from_iso"),
+            date_to_iso=params.get("date_to_iso"),
+            has_attachments=params.get("has_attachments"),
+            fuzzy_threshold=float(params.get("fuzzy_threshold", 0.90)),
+            limit=int(params.get("limit", 50)),
+        )
+        return {"filtered": msgs}
+    except Exception as e:
+        logging.exception("[dynamic_mail_fetch] error")
+        return {"error": str(e)}
+
+# Add these functions to ews_tools2.py
+
+def send_new_email(
+    to_email: str,
+    subject: str,
+    body_html: str,
+    cc_emails: Optional[List[str]] = None,
+    bcc_emails: Optional[List[str]] = None,
+    attachments: Optional[List[str]] = None,
+    importance: str = "Normal"
+) -> str:
+    """
+    Send a new email message (not a reply or forward).
+    
+    Args:
+        to_email: Primary recipient email address
+        subject: Email subject line
+        body_html: HTML body content
+        cc_emails: List of CC recipient emails
+        bcc_emails: List of BCC recipient emails
+        attachments: List of file paths to attach
+        importance: Email importance ('Low', 'Normal', 'High')
+    
+    Returns:
+        Status string indicating success or failure
+    """
+    account = _get_account()
+    
+    if to_email == EMAIL:
+        return "Cannot send email to self!"
+    
+    try:
+        # Create message
+        msg = Message(
+            account=account,
+            subject=subject or "(No subject)",
+            body=HTMLBody(body_html or "<p>No content</p>"),
+            to_recipients=[Mailbox(email_address=to_email)],
+        )
+        
+        # Add CC recipients
+        if cc_emails:
+            msg.cc_recipients = [Mailbox(email_address=cc) for cc in cc_emails if cc]
+        
+        # Add BCC recipients
+        if bcc_emails:
+            msg.bcc_recipients = [Mailbox(email_address=bcc) for bcc in bcc_emails if bcc]
+        
+        # Set importance
+        if importance and importance.lower() in ['low', 'normal', 'high']:
+            msg.importance = importance.capitalize()
+        
+        # Add attachments
+        if attachments:
+            for path in attachments:
+                if os.path.isfile(path):
+                    try:
+                        with open(path, "rb") as f:
+                            attachment = FileAttachment(
+                                name=os.path.basename(path),
+                                content=f.read()
+                            )
+                            msg.attach(attachment)
+                    except Exception as e:
+                        logging.warning(f"Failed to attach {path}: {e}")
+        
+        # Send
+        msg.send()
+        
+        return f"Email sent successfully to {to_email}" + (f" (CC: {', '.join(cc_emails)})" if cc_emails else "")
+    
+    except Exception as e:
+        logging.exception(f"Failed to send email to {to_email}")
+        return f"[Error] Failed to send email: {e}"
+
+
+def forward_email(
+    item_id: str,
+    changekey: str,
+    to_email: str,
+    forward_comment: str = "",
+    cc_emails: Optional[List[str]] = None,
+    bcc_emails: Optional[List[str]] = None
+) -> str:
+    """
+    Forward an existing email to one or more recipients.
+    
+    Args:
+        item_id: ID of the email to forward
+        changekey: Changekey of the email
+        to_email: Primary recipient email address
+        forward_comment: Optional comment to add at the top of forwarded email
+        cc_emails: List of CC recipient emails
+        bcc_emails: List of BCC recipient emails
+    
+    Returns:
+        Status string indicating success or failure
+    """
+    account = _get_account()
+    
+    if to_email == EMAIL:
+        return "Cannot forward email to self!"
+    
+    try:
+        # Get original message
+        try:
+            original = account.inbox.get(id=item_id, changekey=changekey) if changekey else account.inbox.get(id=item_id)
+        except Exception:
+            original = account.inbox.get(id=item_id)
+        
+        # Prepare forward comment
+        comment_html = ""
+        if forward_comment:
+            comment_html = f"<p>{_html.escape(forward_comment)}</p><hr>"
+        
+        # Create forward
+        forward = original.create_forward(
+            subject=original.subject or "(No subject)",
+            body=HTMLBody(comment_html + str(original.body)),
+            to_recipients=[Mailbox(email_address=to_email)]
+        )
+        
+        # Add CC recipients
+        if cc_emails:
+            forward.cc_recipients = [Mailbox(email_address=cc) for cc in cc_emails if cc]
+        
+        # Add BCC recipients
+        if bcc_emails:
+            forward.bcc_recipients = [Mailbox(email_address=bcc) for bcc in bcc_emails if bcc]
+        
+        # Send
+        forward.send()
+        
+        # Mark original as read (optional)
+        try:
+            original.is_read = True
+            original.save()
+        except Exception:
+            pass
+        
+        return f"Email forwarded successfully to {to_email}" + (f" (CC: {', '.join(cc_emails)})" if cc_emails else "")
+    
+    except Exception as e:
+        logging.exception(f"Failed to forward email {item_id}")
+        return f"[Error] Failed to forward email: {e}"
+
+
+def forward_email_with_attachments(
+    item_id: str,
+    changekey: str,
+    to_email: str,
+    forward_comment: str = "",
+    cc_emails: Optional[List[str]] = None,
+    additional_attachments: Optional[List[str]] = None
+) -> str:
+    """
+    Forward email and ensure all attachments are included, plus add new ones.
+    
+    Args:
+        item_id: ID of the email to forward
+        changekey: Changekey of the email
+        to_email: Recipient email address
+        forward_comment: Comment to add
+        cc_emails: List of CC recipients
+        additional_attachments: List of file paths to add as attachments
+    
+    Returns:
+        Status string
+    """
+    account = _get_account()
+    
+    try:
+        # Get original
+        original = account.inbox.get(id=item_id, changekey=changekey) if changekey else account.inbox.get(id=item_id)
+        from html import _html
+        # Create forward
+        comment_html = f"<p>{_html.escape(forward_comment)}</p><hr>" if forward_comment else ""
+        forward = original.create_forward(
+            subject=original.subject or "(No subject)",
+            body=HTMLBody(comment_html + str(original.body)),
+            to_recipients=[Mailbox(email_address=to_email)]
+        )
+        
+        if cc_emails:
+            forward.cc_recipients = [Mailbox(email_address=cc) for cc in cc_emails if cc]
+        
+        # Copy original attachments
+        if original.attachments:
+            for att in original.attachments:
+                if isinstance(att, FileAttachment):
+                    try:
+                        new_att = FileAttachment(name=att.name, content=att.content)
+                        forward.attach(new_att)
+                    except Exception as e:
+                        logging.warning(f"Failed to copy attachment {att.name}: {e}")
+        
+        # Add additional attachments
+        if additional_attachments:
+            for path in additional_attachments:
+                if os.path.isfile(path):
+                    try:
+                        with open(path, "rb") as f:
+                            attachment = FileAttachment(
+                                name=os.path.basename(path),
+                                content=f.read()
+                            )
+                            forward.attach(attachment)
+                    except Exception as e:
+                        logging.warning(f"Failed to attach {path}: {e}")
+        
+        forward.send()
+        
+        return f"Email forwarded with attachments to {to_email}"
+    
+    except Exception as e:
+        logging.exception(f"Failed to forward email with attachments")
+        return f"[Error] {e}"

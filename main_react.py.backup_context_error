@@ -1,0 +1,1661 @@
+"""
+main_react.py
+Sales Agent with ReAct (Reasoning + Acting) Pattern
+Modified version of main.py with ReAct agent support
+"""
+
+# Copy all imports from main.py here - for now, a simplified version
+import os
+import re
+import json
+import logging
+import time
+import tempfile
+import streamlit as st
+from typing import Annotated, List, Optional, Dict, Any
+from datetime import datetime, timezone
+from pathlib import Path
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from streamlit_autorefresh import st_autorefresh
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv(override=True)
+
+# Import RAG and Qdrant functionality
+try:
+    from qdrant_client import QdrantClient
+    from rag_backend import preprocess_documents, create_vector_store, rag_retriever, QDRANT_URL, QDRANT_KEY
+    qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_KEY, prefer_grpc=False, timeout=60)
+except Exception as e:
+    logging.warning(f"Failed to initialize Qdrant client: {e}")
+    qdrant_client = None
+
+# Import ReAct agent
+from react_agent import ReActAgent, ReActStep
+
+# Import all tools from agent_tools
+from agent_tools import ALL_TOOLS
+
+# Import autopilot functionality
+from autopilot import (
+    get_autopilot_rules, set_autopilot_rules,
+    get_autopilot_period_minutes, set_autopilot_period_minutes,
+    autopilot_once, _load_state, _save_state, _DEFAULT_RULES
+)
+from action_handlers import (
+    handle_action, generate_action_from_llm,
+    summarize_for_llm, normalize_followup_subject, ensure_html_from_text
+)
+from rag_manager import (
+    get_active_collection, set_active_collection,
+    RAG_COLLECTIONS, ACTIVE_COLLECTION
+)
+
+# Autopilot constants
+AUTO_KEY = "autopilot_enabled"
+LAST_RUN_KEY = "last_autopilot_run"
+
+# Action plans constants
+ACTION_PLANS_FILE = "action_plans_state.json"
+_DEFAULT_ACTION_PLANS = []
+
+# Import system prompt from main
+SYSTEM_PROMPT = """
+You are Cyfuture's Sales Representative AI Agent. Your job is to triage emails, draft and send replies,
+log follow-ups, schedule demos/meetings, and escalate when needed. Use the available tools to operate on
+Microsoft Exchange Web Services (EWS).
+
+**IMPORTANT: You have access to use web search tool (web_search) RAG knowledge base tool (query_knowledge_base) containing company information,
+policies, pricing, and product details. ALWAYS query this knowledge base with top_k: 3 when:**
+- Customer asks about pricing, products, or services
+- You need accurate company policy information
+- You need technical specifications or details
+- You're unsure about any company-specific information
+
+Behaviour & Principles:
+1) Be helpful, concise, and value-focused. Keep replies short (3–6 sentences) unless the user asks for detail.
+2) Always keep a professional tone; avoid jargon customers wouldn't understand.
+3) When a customer asks for a demo, propose 2–3 time slots and offer a Meet/Teams link.
+4) For inquiries about pricing or proposals, FIRST query the knowledge base,use web search if needed then provide accurate information.
+5) If the email shows high risk (legal, security, or compliance issues) or ambiguity you cannot resolve, escalate.
+6) Summarize the source email before replying so a human can quickly review your reasoning.
+7) When you send or draft any reply, write a crisp subject if you must set it explicitly.
+8) Respect opt-outs. If the sender requests to unsubscribe or stop contact, mark as read and do not follow up.
+9) Keep internal notes out of customer-facing content.
+10) Fetch maximum 10 emails in a single tool call, do repetitive multiple tool calls to complete tasks if needed.
+11) ALWAYS cite the knowledge base and web search when using information from it in customer communications.
+12) Use dynamic_mail_fetch_tool to fetch mails with filters (try to fetch maximum mails according to filter eg. unread:False if not specified.)
+"""
+
+# Load user identity from ENV for chatbox
+user_name = os.getenv("AGENT_USER_NAME", "Sales Agent")
+user_email = os.getenv("EWS_EMAIL", "")
+
+# Separate system prompt for chatbox
+CHATBOX_SYSTEM_PROMPT = f"""
+You are Cyfuture's Sales Representative AI Agent acting on behalf of {user_name} ({user_email}). Your job is to address user query using all available tools and principles. Use the available tools to operate on
+Microsoft Exchange Web Services (EWS).
+
+**YOUR IDENTITY:**
+- You represent: {user_name} ({user_email})
+- Sign all emails as {user_name}
+- Only respond to emails addressed to {user_email} (check TO/CC fields)
+
+**IMPORTANT: You have access to use web search tool (web_search) RAG knowledge base tool (query_knowledge_base) containing company information,
+policies, pricing, and product details. ALWAYS query this knowledge base with top_k: 3 when:**
+- Customer asks about pricing, products, or services
+- You need accurate company policy information
+- You need technical specifications or details
+- You're unsure about any company-specific information
+
+**CC/BCC HANDLING:**
+- ALWAYS preserve CC/BCC recipients when replying to emails
+- When using reply_inline, include cc_recipients parameter if original email had CC
+- Extract CC list from email details and pass to reply_inline tool
+- Example: reply_inline(..., cc_recipients=["colleague@company.com"])
+
+**EMAIL SIGNATURES:**
+- End ALL email replies with:
+  
+  Best regards,
+  {user_name}
+  {user_email}
+
+Behaviour & Principles:
+1) Be helpful, and value-focused. Keep replies short (5–10 sentences) unless the user asks for detail.
+2) Always keep a professional tone; avoid jargon customers wouldn't understand.
+3) When a customer asks for a demo, propose 2–3 time slots and offer a Meet/Teams link.
+4) For inquiries about pricing or proposals, FIRST query the knowledge base, use web search if needed then provide accurate information.
+5) If the email shows high risk (legal, security, or compliance issues) or ambiguity you cannot resolve, escalate.
+6) Summarize the source email before replying so a human can quickly review your reasoning.
+7) When you send or draft any reply, write a crisp subject if you must set it explicitly.
+8) Respect opt-outs. If the sender requests to unsubscribe or stop contact, mark as read and do not follow up.
+9) Keep internal notes out of customer-facing content.
+10) Fetch maximum 10 emails in a single tool call, do repetitive multiple tool calls to complete tasks if needed.
+11) ALWAYS cite the knowledge base and web search when using information from it in customer communications.
+12) Always try providing relevant links to users if available from web search.
+13) Use dynamic_mail_fetch_tool to fetch mails with filters (try to fetch maximum mails according to filter eg. unread:False if not specified.)
+14) Use search_and_fetch_emails tool to fetch emails with their full content with filters (try to fetch maximum mails (less than 10) according to filter eg. unread:False if not specified.)
+15) Use reply_inline tool to reply to emails with filters as well as to keep mail thread in reply
+**AUTOPILOT & AUTOMATION:**
+- Autopilot runs independently, processing new unread emails based on autopilot rules
+- Tools: create_autopilot_rule, list_autopilot_rules, delete_autopilot_rule, create_action_plan, list_action_plans, delete_action_plan
+- Action plans support natural language periodic task execution and stopping conditions (e.g., "Stop when user replies")
+- Use these to automate follow-ups, summaries, and periodic tasks and other complex tasks
+
+🛠️ **UTILITY:**
+1. **inform_user** (reasoning: str): Show internal reasoning/messages to human operator
+   - Use when: Need to communicate with user, ask for confirmation, or explain reasoning
+   - Example: inform_user(reasoning="I found 5 unread emails. Should I draft replies?")
+
+2. **auto_handle_email** (item_id, changekey, intent, ...): Auto-process based on intent
+   - Intents: acknowledge, follow_up, propose_meeting, mark_junk, follow_up_thread
+   - Use for: Automated handling of common email patterns
+
+3. **current_time** (tz_name="Asia/Kolkata"): Get current time in ISO format
+4. **chat_with_human** (query, context): Request manual human assistance
+5. **end_task** (summary): Mark task as completed
+6. **set_credentials_tool** (email, password, host): Set EWS credentials
+
+🎯 TOOL USAGE STRATEGY:
+
+✅ **DO:**
+- Read user request carefully - do EXACTLY what they ask
+- Choose the MOST EFFICIENT tool for the task:
+  * search_and_fetch_emails > dynamic_mail_fetch_tool + batch_fetch_emails
+  * batch_fetch_emails > multiple fetch_email calls
+  * dynamic_mail_fetch_tool > search_and_fetch_emails
+  * schedule_with_check > send_ics_invite
+- Use filters wisely: unread=True ONLY if user mentions "unread"
+- DRAFT emails by default unless hands-free mode is ON and content is routine
+- Query KB when drafting emails that need company info
+- Cite sources when using KB or web search
+- Use inform_user(reasoning="your message") to confirm before important actions
+- Be concise: 5-10 sentences unless detail requested
+- Use EXACT parameter names as shown in tool descriptions (e.g., "reasoning" for inform_user, NOT "query")
+
+❌ **DON'T:**
+- Fetch emails if user just wants to ask a question or query KB
+- Query KB if user only wants to list/check emails  
+- Use multiple tools when one efficient tool suffices
+- Auto-send emails when hands-free mode is OFF
+- Make assumptions - ask for clarification via inform_user
+- Include internal reasoning in customer-facing drafts
+- Fetch more than needed (respect limit parameters)
+- reply, send, draft, forward or schedule emails unless user asks for it, just user inform_uesr to reply them.
+
+⚙️ SPECIAL INSTRUCTIONS:
+- **Demo requests**: Propose 2-3 time slots, use schedule_with_check
+- **Follow-ups**: If thread exists, use follow_up_thread_tool for context
+- **VIP emails**: Handle with priority, inform user
+- **Complex requests**: Break into steps, use inform_user if clarification needed
+
+🤖 **ACTION PLANS (create_action_plan, list_action_plans, update_action_plan, delete_action_plan)**:
+- **CRITICAL**: create_action_plan is for SCHEDULING tasks to run automatically later with stopping conditions.
+- **DO NOT** execute the task yourself after creating an action plan
+- After creating a plan, immediately call end_task with a summary
+- The system will automatically execute the plan at the scheduled time
+- You can use both create_action_plan and create_autopilot_rule to complete user demand regarding unread mails and periodic tasks if needed.
+- Example workflow:
+  User: "Schedule a daily email summary at 9 AM"
+  ✅ Correct: create_action_plan(...) → end_task("Plan created, will run daily at 9 AM")
+  ❌ Wrong: create_action_plan(...) → fetch emails → send summary (DON'T DO THIS!)
+- **Opt-out requests**: Use ignore_spam, do NOT follow up
+- **Complex searches**: Use search_and_fetch_emails for one-step search+fetch
+- **Bulk operations**: Use batch_fetch_emails for multiple emails
+- **Subject lines**: Keep crisp and relevant
+- **Hands-free Mode OFF**: Always DRAFT first, use inform_user for confirmation
+- **Hands-free Mode ON**: Can auto-send routine items, still DRAFT sensitive content
+- **Good-html-mail-formatting**: Be good and attractive at drafting mails and writing mails with good html and css formatting (use tables, headings, lists, and more..).
+💡 EFFICIENCY REMINDER: Use the minimum tools needed to fulfill the user's actual request. Batch operations where possible.
+
+🎯FOR YOUR KNOWLEDGE :
+- Prospects means Potential Customers.
+
+"""
+
+# LLM
+llm = ChatOpenAI(
+    api_key=os.getenv("OPENAI_API_KEY", "token-abc123"),
+    base_url=os.getenv("OPENAI_BASE_URL", "http://49.50.117.66:8000/v1"),
+    model=os.getenv("OPENAI_MODEL", "/model"),
+    temperature=0.2,
+    max_tokens=5000,
+)
+
+# State
+class State(dict):
+    messages: Annotated[list, add_messages]
+    hands_free: bool
+    react_mode: bool  # Toggle for ReAct mode
+    react_steps: Optional[List] = None  # Store ReAct steps
+
+def build_graph_react():
+    """Build graph with ReAct agent"""
+    graph_builder = StateGraph(State)
+    
+    def chatbot_react(state: State):
+        """ReAct-based chatbot showing explicit reasoning"""
+        hs = state.get("hands_free", False)
+        policy_msg = (
+            f"[POLICY] HANDS_FREE={'ON' if hs  else 'OFF'}; "
+            "If ON, you may auto-send routine items. "
+            "If OFF or content is sensitive, DRAFT first and ask via inform_user."
+        )
+        
+        # Create ReAct agent
+        react_agent = ReActAgent(
+            llm=llm,
+            tools=ALL_TOOLS,
+            system_prompt=SYSTEM_PROMPT + "\n" + policy_msg
+        )
+        
+        # Get user input
+        messages = state.get("messages", [])
+        if not messages:
+            return {"messages": [AIMessage(content="No input received.")]}
+        
+        last_msg = messages[-1]
+        user_input = last_msg.content if isinstance(last_msg, HumanMessage) else str(last_msg)
+        
+        # Store steps
+        react_steps = []
+        
+        # Run ReAct agent with streaming
+        for step in react_agent.run_streaming(user_input, max_iterations=50):
+            react_steps.append(step)
+        
+        # Format response
+        response_parts = []
+        
+        for step in react_steps:
+            if step.step_type == "thought":
+                response_parts.append(f"💭 **Thought:** {step.content}")
+            elif step.step_type == "action":
+                response_parts.append(f"⚙️ **Action:** `{step.tool_name}`")
+                if step.tool_input:
+                    response_parts.append(f"   Input: `{json.dumps(step.tool_input, default=str)}`")
+            elif step.step_type == "observation":
+                obs_preview = step.content[:8000] + "..." if len(step.content) > 8000 else step.content
+                response_parts.append(f"📊 **Observation:** {obs_preview}")
+            elif step.step_type == "final_answer":
+                response_parts.append(f"\n✅ **Final Answer:**\n{step.content}")
+        
+        full_response = "\n\n".join(response_parts)
+        
+        return {
+            "messages": [AIMessage(content=full_response)],
+            "react_steps": react_steps
+        }
+    
+    # Add nodes
+    graph_builder.add_node("chatbot", chatbot_react)
+    graph_builder.add_edge(START, "chatbot")
+    graph_builder.add_edge("chatbot", END)
+    
+    return graph_builder.compile(checkpointer=InMemorySaver())
+
+# ============= CREDENTIAL RELOAD FUNCTION =============
+def reload_credentials() -> bool:
+    """
+    Reload EWS credentials from .env file and update runtime globals.
+    This allows credentials to be changed without restarting the application.
+    
+    Returns:
+        bool: True if credentials reloaded successfully, False otherwise
+    """
+    try:
+        # Reload environment variables from .env file
+        load_dotenv(override=True)
+        
+        # Update ews_tools2 runtime globals
+        import ews_tools2
+        ews_tools2.EMAIL = os.getenv("EWS_EMAIL", "")
+        ews_tools2.PASSWORD = os.getenv("EWS_PASSWORD", "")
+        ews_tools2.EXCHANGE_HOST = os.getenv("EWS_HOST", "")
+        
+        # Clear cached account to force reconnection with new credentials
+        ews_tools2._account = None
+        ews_tools2._account_config = None
+        
+        logging.info(f"[reload_credentials] Credentials reloaded for: {ews_tools2.EMAIL}")
+        return True
+        
+    except Exception as e:
+        logging.error(f"[reload_credentials] Failed to reload credentials: {e}")
+        return False
+
+# ============= ACTION PLANS STATE MANAGEMENT =============
+from pathlib import Path
+
+def _load_action_plans_state() -> Dict[str, Any]:
+    """Load action plans from file"""
+    try:
+        p = Path(ACTION_PLANS_FILE)
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+        return {"action_plans": _DEFAULT_ACTION_PLANS, "execution_history": []}
+    except Exception:
+        return {"action_plans": _DEFAULT_ACTION_PLANS, "execution_history": []}
+
+def _save_action_plans_state(state: Dict[str, Any]):
+    """Save action plans to file"""
+    try:
+        Path(ACTION_PLANS_FILE).write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception as e:
+        logging.warning(f"Failed to save action plans: {e}")
+
+def get_action_plans() -> List[Dict[str, Any]]:
+    """Get all action plans"""
+    state = _load_action_plans_state()
+    return state.get("action_plans", [])
+
+def set_action_plans(plans: List[Dict[str, Any]]):
+    """Save action plans"""
+    state = _load_action_plans_state()
+    state["action_plans"] = plans
+    _save_action_plans_state(state)
+
+def add_action_plan_execution(plan_id: str, result: Dict[str, Any]):
+    """Record execution history"""
+    state = _load_action_plans_state()
+    history = state.get("execution_history", [])
+    history.insert(0, {
+        "plan_id": plan_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **result
+    })
+    state["execution_history"] = history[:100]  # Keep last 100
+    _save_action_plans_state(state)
+
+# Streamlit UI
+st.set_page_config(page_title="Sales Rep Agent (ReAct Mode)", layout="wide")
+st.title("📧 AI Sales Representative Agent - ReAct Mode")
+st.caption("Powered by ReAct (Reasoning + Acting) Pattern")
+
+# Initialize session - reset messages on fresh load
+if "session_initialized" not in st.session_state:
+    st.session_state.session_initialized = True
+    st.session_state.messages = []
+    logging.info("[Session] Fresh session started - messages cleared")
+
+# Initialize graph and config
+if "graph" not in st.session_state:
+    st.session_state.graph = build_graph_react()
+    st.session_state.config = {"configurable": {"thread_id": "sales-react-1"}}
+    
+# Ensure messages list exists (for backward compatibility)
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Initialize autopilot state (kept for backward compatibility with UI)
+if AUTO_KEY not in st.session_state:
+    st.session_state[AUTO_KEY] = False
+
+# NOTE: The background autopilot service is controlled via service_enabled state
+# (managed by the "Enable Autopilot Service" toggle), not by AUTO_KEY or stop flags.
+# The service ignores autopilot_stop.flag and uses its own service_enabled check.
+    
+if "autopilot_logs" not in st.session_state:
+    st.session_state.autopilot_logs = []
+if LAST_RUN_KEY not in st.session_state:
+    st.session_state[LAST_RUN_KEY] = None
+
+# Sidebar
+with st.sidebar:
+    st.title("🤖 ReAct Agent")
+    
+    st.markdown("---")
+    st.markdown("### ⚙️ Settings")
+    
+    hands_free = st.toggle(
+        "🚀 Hands-free Mode", 
+        value=False,
+        key="hands_free_toggle",
+        help="Auto-send routine emails without confirmation"
+    )
+    
+    st.markdown("---")
+    st.markdown("### 🤖 Autopilot Service")
+    
+    # Helper function to check service status
+    def check_service_status(service_name):
+        """Check if Windows service is running"""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["sc", "query", service_name],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                if "RUNNING" in result.stdout:
+                    return "running"
+                elif "STOPPED" in result.stdout:
+                    return "stopped"
+            return "not_installed"
+        except Exception:
+            return "unknown"
+    
+    # Get service status
+    service_status = check_service_status("AutopilotService")
+    
+    # Display service status
+    if service_status == "running":
+        st.success("✅ Service Running")
+    elif service_status == "stopped":
+        st.info("⏸️ Service Stopped")
+    elif service_status == "not_installed":
+        st.warning("⚠️ Service Not Installed")
+    else:
+        st.caption("❓ Status Unknown")
+    
+    # Import service state functions
+    from autopilot import get_autopilot_service_enabled, set_autopilot_service_enabled
+    
+    # Toggle for enable/disable
+    current_service_enabled = get_autopilot_service_enabled()
+    autopilot_service_enabled = st.toggle(
+        "Enable Autopilot Service",
+        value=current_service_enabled,
+        key="autopilot_service_toggle", 
+        help="Enable/disable autopilot background service"
+    )
+    
+    # Handle toggle state change
+    if autopilot_service_enabled != current_service_enabled:
+        import subprocess
+        set_autopilot_service_enabled(autopilot_service_enabled)
+        
+        if autopilot_service_enabled:
+            # Start service
+            try:
+                result = subprocess.run(
+                    ["net", "start", "AutopilotService"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    st.success("✅ Service started")
+                else:
+                    st.error(f"❌ Failed to start service: {result.stderr}")
+            except Exception as e:
+                st.error(f"❌ Error starting service: {e}")
+        else:
+            # Stop service
+            try:
+                result = subprocess.run(
+                    ["net", "stop", "AutopilotService"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    st.success("✅ Service stopped")
+                else:
+                    st.warning(f"⚠️ {result.stderr}")
+            except Exception as e:
+                st.error(f"❌ Error stopping service: {e}")
+        
+        time.sleep(1)
+        st.rerun()
+    
+    # Configuration section
+    if autopilot_service_enabled or service_status == "running":
+        st.markdown("**Configuration**")
+        
+        period = st.number_input(
+            "Check interval (minutes)",
+            min_value=1,
+            max_value=60,
+            value=get_autopilot_period_minutes(),
+            help="How often to check for new emails"
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("💾 Save", use_container_width=True):
+                set_autopilot_period_minutes(period)
+                # Convert minutes to seconds for service
+                import os
+                from pathlib import Path
+                env_path = Path(".env")
+                if env_path.exists():
+                    content = env_path.read_text()
+                    # Update AUTOPILOT_SERVICE_INTERVAL
+                    import re
+                    interval_seconds = period * 60
+                    new_content = re.sub(
+                        r'AUTOPILOT_SERVICE_INTERVAL=\d+',
+                        f'AUTOPILOT_SERVICE_INTERVAL={interval_seconds}',
+                        content
+                    )
+                    env_path.write_text(new_content)
+                st.success("✅ Saved - restart service for changes")
+        
+        with col2:
+            if st.button("🔄 Restart", use_container_width=True):
+                import subprocess
+                try:
+                    subprocess.run(["net", "stop", "AutopilotService"], timeout=10)
+                    time.sleep(2)
+                    subprocess.run(["net", "start", "AutopilotService"], timeout=10)
+                    st.success("✅ Service restarted")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
+        
+        # Show last run timestamp
+        try:
+            from autopilot import _load_state
+            state = _load_state()
+            last_run = state.get("service_last_run")
+            if last_run:
+                from datetime import datetime
+                try:
+                    dt = datetime.fromisoformat(last_run)
+                    st.caption(f"⏱️ Last run: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                except:
+                    st.caption(f"⏱️ Last run: {last_run}")
+        except Exception:
+            pass
+        
+        # Manual run button
+        if st.button("▶️ Run Now (Manual)", use_container_width=True):
+            with st.spinner("Running autopilot..."):
+                try:
+                    logs = autopilot_once()
+                    st.session_state.autopilot_logs.extend(logs)
+                    st.success(f"✅ Processed {len(logs)} items")
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+    
+    # Service control buttons (for manual control)
+    if service_status == "not_installed":
+        st.markdown("---")
+        st.info("💡 Run `install_autopilot_service.bat` to install the service")
+    
+    # Activity log preview
+    st.markdown("---")
+    st.markdown("### 📊 Recent Activity")
+    if st.session_state.get("autopilot_logs"):
+        with st.expander("View Logs"):
+            for log in st.session_state["autopilot_logs"][-10:]:
+                st.caption(log)
+    else:
+        st.caption("No activity yet")
+    
+    if st.button("🧹 Clear Chat"):
+        st.session_state.messages = []
+        st.rerun()
+
+
+
+# ============= CUSTOM ACTION PLAN EXECUTOR =============
+def execute_custom_action_plan(
+    user_task: str, 
+    hands_free: bool,
+    plan_container=None
+) -> List[ReActStep]:
+    """
+    Execute a user-defined custom action plan using ReAct agent.
+    
+    Args:
+        user_task: The big task description from user
+        hands_free: Whether to auto-execute actions
+        plan_container: Optional Streamlit container for real-time display
+    
+    Returns:
+        List of ReActStep objects
+    """
+    policy_msg = (
+        f"[POLICY] HANDS_FREE={'ON' if hands_free else 'OFF'}; "
+        "If ON, you may auto-send routine items. "
+        "If OFF or content is sensitive, DRAFT first and ask via inform_user."
+    )
+    
+    react_agent = ReActAgent(
+        llm=llm,
+        tools=ALL_TOOLS,
+        system_prompt=SYSTEM_PROMPT + "\n" + policy_msg
+    )
+    
+    # Stream execution steps
+    react_steps = []
+    response_parts = []
+    
+    for step in react_agent.run_streaming(user_task, max_iterations=50):
+        react_steps.append(step)
+        
+        # Format step for display
+        if step.step_type == "thought":
+            response_parts.append(f"💭 **Thought:** {step.content}")
+        elif step.step_type == "action":
+            response_parts.append(f"⚙️ **Action:** `{step.tool_name}`")
+            if step.tool_input:
+                response_parts.append(f"   Input: `{json.dumps(step.tool_input, default=str)[:200]}`")
+        elif step.step_type == "observation":
+            obs_preview = step.content[:8000] + "..." if len(step.content) > 8000 else step.content
+            response_parts.append(f"📊 **Observation:** {obs_preview}")
+        elif step.step_type == "final_answer":
+            response_parts.append(f"\n✅ **Final Answer:**\n{step.content}")
+        
+        # Update display if container provided
+        if plan_container:
+            plan_container.markdown("\n\n".join(response_parts))
+    
+    return react_steps
+
+
+# ==========================================
+# TABBED INTERFACE
+# ==========================================
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "💬 Chatbox",
+    "📚 Knowledge Base",
+    "⚙️ Autopilot Rules", 
+    "📊 Autopilot Activity",
+    "🎯 Action Plans",
+    "🔌 Connection Settings"
+])
+
+# ==========================================
+# TAB 1: CHATBOX
+# ==========================================
+with tab1:
+    st.markdown("### 💬 Conversation")
+    
+    # Display messages with expandable format
+    chat_container = st.container(height=500)
+    with chat_container:
+        for msg_idx, msg in enumerate(st.session_state.messages):
+            if isinstance(msg, HumanMessage):
+                with st.chat_message("user"):
+                    st.markdown(msg.content)
+            elif isinstance(msg, AIMessage):
+                with st.chat_message("assistant"):
+                    # Parse the serialized steps and display with expandable UI
+                    lines = msg.content.split("\n\n")
+                    thought_counter = 0
+                    action_counter = 0
+                    
+                    for line in lines:
+                        if line.startswith("💭 Thought:"):
+                            thought_counter += 1
+                            st.markdown(line)
+                        elif line.startswith("⚙️ Action:"):
+                            action_counter += 1
+                            action_name = line.replace("⚙️ Action:", "").strip()
+                            with st.expander(f"⚙️ **Action {action_counter}:** {action_name}", expanded=True):
+                                st.caption("Tool call details available in live view")
+                        elif line.startswith("📊 Observation:"):
+                            obs_content = line.replace("📊 Observation:", "").strip()
+                            # Show preview in expander
+                            preview = obs_content[:100] if len(obs_content) > 100 else obs_content
+                            with st.expander(f"📊 **Observation {action_counter}:** {preview}...", expanded=False):
+                                st.text_area(
+                                    "Output",
+                                    obs_content,
+                                    height=200,
+                                    key=f"hist_obs_{msg_idx}_{action_counter}"
+                                )
+                        elif line.startswith("✅ Final Answer:"):
+                            # Extract final answer (may span multiple lines)
+                            final_idx = lines.index(line)
+                            # Get all remaining lines as the final answer
+                            final_content = "\n\n".join(lines[final_idx:]).replace("✅ Final Answer:", "").strip()
+                            st.success("✅ **Final Answer:**")
+                            st.markdown(final_content)
+                            break  # Final answer is always the last part
+
+
+    # Chat input
+    user_input = st.chat_input("Ask me to check emails, draft replies, query knowledge base...")
+
+    if user_input:
+        # Add user message
+        hm = HumanMessage(content=user_input)
+        st.session_state.messages.append(hm)
+        
+        # Create placeholder for streaming output
+        with st.chat_message("assistant"):
+            thinking_placeholder = st.empty()
+            main_container = st.container()
+            
+            # Create ReAct agent
+            policy_msg = (
+                f"[POLICY] HANDS_FREE={'ON' if hands_free else 'OFF'}; "
+                "If ON, you may auto-send routine items. "
+                "If OFF or content is sensitive, DRAFT first and ask via inform_user."
+            )
+            
+            react_agent = ReActAgent(
+                llm=llm,
+                tools=ALL_TOOLS,
+                system_prompt=CHATBOX_SYSTEM_PROMPT + "\n" + policy_msg
+            )
+            
+            # Stream steps in real-time with expandable UI
+            react_steps = []
+            thought_counter = 0
+            action_counter = 0
+            
+            thinking_placeholder.info("🤔 Starting ReAct loop...")
+            
+            # Pass conversation history for context (exclude current message)
+            conversation_history = st.session_state.messages[:-1] if len(st.session_state.messages) > 1 else None
+            
+            for step in react_agent.run_streaming(
+                user_input, 
+                max_iterations=50,
+                conversation_history=conversation_history
+            ):
+                react_steps.append(step)
+                
+                with main_container:
+                    # THOUGHTS - Always visible
+                    if step.step_type == "thought":
+                        thought_counter += 1
+                        st.markdown(f"💭 **Thought {thought_counter}:** {step.content}")
+                    
+                    # ACTIONS - Collapsible/Expandable
+                    elif step.step_type == "action":
+                        action_counter += 1
+                        with st.expander(f"⚙️ **Action {action_counter}:** `{step.tool_name}`", expanded=False):
+                            st.code(json.dumps(step.tool_input, indent=2, default=str), language="json")
+                    
+                    # OBSERVATIONS - Collapsible/Expandable with FULL content
+                    elif step.step_type == "observation":
+                        # Create preview for expander label
+                        preview = step.content[:50] if len(step.content) > 50 else step.content
+                        with st.expander(
+                            f"📊 **Observation {action_counter}:** {len(step.content)} chars | {preview}...", 
+                            expanded=False
+                        ):
+                            # Show FULL content - no truncation
+                            st.text_area(
+                                "Full Output", 
+                                step.content,  # Complete observation
+                                height=400,
+                                key=f"obs_{action_counter}_{time.time()}"
+                            )
+                    
+                    # FINAL ANSWER - Always visible
+                    elif step.step_type == "final_answer":
+                        st.success(f"✅ **Final Answer:**")
+                        st.markdown(step.content)
+                    
+                    # ERROR - Show prominently with warning
+                    elif step.step_type == "error":
+                        st.error("❌ **Error Occurred**")
+                        st.markdown(step.content)
+                        # If context error, add a button to clear chat
+                        if "Context Length Exceeded" in step.content:
+                            if st.button("🧹 Clear Chat Now", key=f"clear_error_{time.time()}"):
+                                st.session_state.messages = []
+                                st.rerun()
+            
+            # Clear thinking indicator
+            thinking_placeholder.empty()
+            
+            # Build serialized response for message history
+            serialized_parts = []
+            for step in react_steps:
+                if step.step_type == "thought":
+                    serialized_parts.append(f"💭 Thought: {step.content}")
+                elif step.step_type == "action":
+                    serialized_parts.append(f"⚙️ Action: {step.tool_name}")
+                elif step.step_type == "observation":
+                    # Store FULL observation - UI will handle preview/expansion
+                    serialized_parts.append(f"📊 Observation: {step.content}")
+                elif step.step_type == "final_answer":
+                    serialized_parts.append(f"✅ Final Answer: {step.content}")
+            
+            full_response = "\n\n".join(serialized_parts)
+            ai_msg = AIMessage(content=full_response)
+            st.session_state.messages.append(ai_msg)
+        
+        st.rerun()
+    
+    # Instructions
+    with st.expander("ℹ️ How to Use ReAct Mode"):
+        st.markdown("""
+        **ReAct Pattern** = **Reasoning** + **Acting**
+        
+        The agent will show you its thinking process:
+        1. 💭 **Thought:** What the agent is thinking
+        2. ⚙️ **Action:** Which tool it's using
+        3. 📊 **Observation:** The result from the tool
+        4. ... (repeats as needed)
+        5. ✅ **Final Answer:** The conclusion
+        
+        **Toggle Settings:**
+        - **Show All Thinking Steps:** See every thought/action (great for debugging)
+        - **Hands-free Mode:** Agent can send emails automatically
+        
+        **Try these queries:**
+        - "List my latest 5 unread emails"
+        - "Query the knowledge base and use web_search about our cloud hosting pricing"
+        - "Check unread emails and draft responses using knowledge base info and using web_search"
+        """)
+
+# ==========================================
+# TAB 2: KNOWLEDGE BASE MANAGEMENT
+# ==========================================
+with tab2:
+    st.markdown("## 📚 Knowledge Base Management")
+    st.markdown("Upload company documents (policies, pricing, products) to power intelligent responses")
+    
+    # Active Collection Selector - PROMINENT
+    st.markdown("---")
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        # Get list of available collections from Qdrant
+        available_collections = []
+        try:
+            if qdrant_client:
+                collections = qdrant_client.get_collections()
+                available_collections = [col.name for col in collections.collections]
+        except Exception as e:
+            st.error(f"Failed to fetch collections: {e}")
+        
+        current_active = get_active_collection()
+        
+        if available_collections:
+            selected_collection = st.selectbox(
+                "🎯 Active Knowledge Base Collection",
+                options=["None"] + available_collections,
+                index=(available_collections.index(current_active) + 1) if current_active in available_collections else 0,
+                help="Select which collection the agent should query. Only one can be active at a time."
+            )
+        else:
+            st.warning("⚠️ No collections found in Qdrant. Upload documents to create one.")
+            selected_collection = "None"
+    
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)  # Spacer
+        if st.button("✅ Set Active", use_container_width=True):
+            if selected_collection and selected_collection != "None":
+                set_active_collection(selected_collection)
+                st.success(f"✅ Active collection: **{selected_collection}**")
+                st.rerun()
+            else:
+                set_active_collection(None)
+                st.info("ℹ️ No collection active")
+                st.rerun()
+    
+    with col3:
+        st.markdown("<br>", unsafe_allow_html=True)  # Spacer
+        if st.button("🔄 Refresh List", use_container_width=True):
+            st.rerun()
+    
+    st.markdown("---")
+    
+    # Upload and manage documents
+    col_upload, col_manage = st.columns([1, 1])
+    
+    with col_upload:
+        st.markdown("### 📤 Upload Documents")
+        
+        collection_name = st.text_input(
+            "Collection Name",
+            value="sales_knowledge_base",
+            help="Name for this knowledge base collection"
+        )
+        
+        uploaded_files = st.file_uploader(
+            "Upload files",
+            type=["txt", "md", "text", "pdf"],
+            accept_multiple_files=True,
+            key="rag_file_uploader"
+        )
+        
+        if uploaded_files:
+            st.success(f"📁 {len(uploaded_files)} file(s) selected")
+            
+            # Show file previews
+            with st.expander("📋 View uploaded files"):
+                for f in uploaded_files:
+                    st.caption(f"• {f.name} ({f.size} bytes)")
+            
+            description = st.text_area(
+                "Collection Description (optional)",
+                placeholder="e.g., Q4 2024 pricing policies and product catalog",
+                height=80
+            )
+            
+            if st.button("🚀 Build Knowledge Base", use_container_width=True, type="primary"):
+                with st.spinner("Processing documents and building vector store..."):
+                    try:
+                        # Save files temporarily
+                        temp_paths = []
+                        for uploaded_file in uploaded_files:
+                            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as tmp:
+                                content = uploaded_file.read().decode('utf-8')
+                                tmp.write(content)
+                                temp_paths.append(tmp.name)
+                        
+                        # Process documents
+                        doc_splits = preprocess_documents(temp_paths)
+                        
+                        if doc_splits:
+                            # Create vector store with specified collection name
+                            retriever = create_vector_store(doc_splits, collection_name)
+                            
+                            # Store in session state
+                            st.session_state["rag_vector_store"] = retriever
+                            
+                            # Set as active collection
+                            set_active_collection(collection_name)
+                            
+                            st.success(f"✅ Knowledge base **{collection_name}** built with {len(doc_splits)} chunks!")
+                            st.balloons()
+                            
+                            # Cleanup temp files
+                            for path in temp_paths:
+                                try:
+                                    os.remove(path)
+                                except:
+                                    pass
+                        else:
+                            st.error("❌ Failed to process documents")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error building knowledge base: {str(e)}")
+    
+    with col_manage:
+        st.markdown("### 🔍 Test Knowledge Base")
+        
+        active = get_active_collection()
+        if active:
+            st.info(f"📚 Querying: **{active}**")
+            
+            test_query = st.text_input(
+                "Test Query",
+                placeholder="e.g., What are our cloud hosting prices?"
+            )
+            
+            test_k = st.slider("Number of results", 1, 10, 3)
+            
+            if st.button("🔍 Search", use_container_width=True):
+                if test_query:
+                    with st.spinner("Searching knowledge base..."):
+                        try:
+                            # Import query_knowledge_base tool from agent_tools
+                            from agent_tools import query_knowledge_base
+                            
+                            result = query_knowledge_base.invoke({
+                                "query": test_query, 
+                                "top_k": test_k
+                            })
+                            result_data = json.loads(result)
+                            
+                            if "error" in result_data:
+                                st.error(f"❌ {result_data['error']}")
+                            else:
+                                st.success(f"✅ Found {len(result_data.get('hits', []))} results")
+                                
+                                for i, hit in enumerate(result_data.get('hits', []), 1):
+                                    with st.expander(f"Result #{i} - Score: {hit.get('score', 0):.3f}"):
+                                        st.markdown(f"**Content:**")
+                                        st.text(hit.get('content', '')[:500])
+                                        if hit.get('metadata'):
+                                            st.markdown(f"**Metadata:** `{hit['metadata']}`")
+                        except Exception as e:
+                            st.error(f"❌ Query failed: {str(e)}")
+                else:
+                    st.warning("⚠️ Enter a query first")
+        else:
+            st.warning("⚠️ No active collection. Upload documents or select an existing collection.")
+    
+    st.markdown("---")
+    
+    # Collection Management
+    st.markdown("### 🗂️ Manage Collections")
+    
+    if available_collections:
+        for col_name in available_collections:
+            col1, col2, col3 = st.columns([3, 1, 1])
+            
+            with col1:
+                is_active = (col_name == get_active_collection())
+                status = "🟢 ACTIVE" if is_active else "⚪"
+                st.markdown(f"{status} **{col_name}**")
+            
+            with col2:
+                if st.button("📊 Info", key=f"info_{col_name}"):
+                    try:
+                        info = qdrant_client.get_collection(col_name)
+                        st.info(f"Points: {info.points_count}, Vectors: {info.vectors_count}")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            
+            with col3:
+                if st.button("🗑️ Delete", key=f"del_{col_name}"):
+                    try:
+                        qdrant_client.delete_collection(col_name)
+                        if col_name == get_active_collection():
+                            set_active_collection(None)
+                        st.success(f"✅ Deleted {col_name}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ {e}")
+    else:
+        st.info("No collections yet. Upload documents to create one.")
+
+# ==========================================
+# TAB 3: AUTOPILOT RULES
+# ==========================================
+with tab3:
+    st.markdown("## ⚙️ Autopilot Rules Configuration")
+    st.markdown("Define natural language rules for how the agent should handle different types of emails")
+    
+    current_rules = get_autopilot_rules()
+    
+    # Display existing rules (sorted by priority for visibility)
+    st.markdown("### 📋 Active Rules (sorted by priority)")
+    st.caption("💡 Priority: 1=Critical, 2=Medium, 3=Low. Used only when rules contradict each other.")
+    
+    # Sort rules by priority for display
+    display_rules = sorted(current_rules, key=lambda r: r.get('priority', 999))
+    
+    to_delete_index = None
+    for idx, rule in enumerate(display_rules):
+        with st.container():
+            col1, col2, col3, col4 = st.columns([1, 1, 7, 1])
+            
+            with col1:
+                enabled = st.checkbox(
+                    "✓",
+                    value=bool(rule.get("enabled", True)),
+                    key=f"rule_enable_{rule['id']}",
+                    label_visibility="collapsed"
+                )
+                rule["enabled"] = enabled
+            
+            with col2:
+                # Priority number input
+                priority = st.selectbox(
+                    "Priority",
+                    options=[1, 2, 3],
+                    index=[1, 2, 3].index(int(rule.get('priority', 2))),
+                    key=f"rule_priority_{rule['id']}",
+                    format_func=lambda x: {1: "1-Critical", 2: "2-Medium", 3: "3-Low"}.get(x, str(x)),
+                    label_visibility="collapsed",
+                    help="1=Critical (urgent/security), 2=Medium (standard), 3=Low (general). Used only when rules conflict."
+                )
+                rule["priority"] = priority
+            
+            with col3:
+                status = "🟢" if enabled else "⚪"
+                builtin = " (Built-in)" if rule.get("builtin") else ""
+                st.markdown(f"{status} **#{priority}** {rule['name']}{builtin}")
+                st.caption(rule.get("prompt", "—"))
+            
+            with col4:
+                if not rule.get("builtin"):
+                    if st.button("🗑️", key=f"rule_remove_{rule['id']}"):
+                        # Find original index in current_rules
+                        for original_idx, r in enumerate(current_rules):
+                            if r['id'] == rule['id']:
+                                to_delete_index = original_idx
+                                break
+        
+        st.markdown("---")
+    
+    if to_delete_index is not None:
+        removed = current_rules.pop(to_delete_index)
+        set_autopilot_rules(current_rules)
+        st.success(f"✅ Removed rule '{removed.get('name')}'")
+        st.rerun()
+    
+    # Save button
+    if st.button("💾 Save All Rule Changes", type="primary", use_container_width=True):
+        set_autopilot_rules(current_rules)
+        st.success("✅ Rules saved successfully!")
+    
+    st.markdown("---")
+    
+    # Add new rule
+    st.markdown("### ➕ Create New Rule")
+    
+    with st.form("new_rule_form"):
+        new_name = st.text_input(
+            "Rule Name",
+            placeholder="e.g., High-priority customer handler"
+        )
+        
+        new_priority = st.selectbox(
+            "Priority",
+            options=[1, 2, 3],
+            index=2,  # Default to 3 (Low priority)
+            format_func=lambda x: {1: "1 - Critical", 2: "2 - Medium", 3: "3 - Low"}.get(x, str(x)),
+            help="1=Critical (urgent/security), 2=Medium (standard), 3=Low (general). Used only when rules conflict."
+        )
+        
+        new_prompt = st.text_area(
+            "Rule Instruction (Natural Language)",
+            placeholder="e.g., If email is from a VIP customer (domain: @bigcorp.com), immediately escalate to human and send acknowledgment.",
+            height=100
+        )
+        
+        enabled_new = st.checkbox("Enable this rule immediately", value=True)
+        
+        submit = st.form_submit_button("➕ Add Rule", use_container_width=True)
+        
+        if submit:
+            if not new_name.strip() or not new_prompt.strip():
+                st.warning("⚠️ Please provide both name and instruction")
+            else:
+                new_rule = {
+                    "id": f"custom_{int(datetime.now(timezone.utc).timestamp())}",
+                    "name": new_name.strip(),
+                    "enabled": bool(enabled_new),
+                    "prompt": new_prompt.strip(),
+                    "builtin": False,
+                    "priority": new_priority  # Use selected priority
+                }
+                current_rules.append(new_rule)
+                set_autopilot_rules(current_rules)
+                st.success(f"✅ Added rule: '{new_rule['name']}'")
+                st.rerun()
+    
+# ==========================================
+# TAB 4: AUTOPILOT ACTIVITY
+# ==========================================
+with tab4:
+    st.markdown("## 📊 Autopilot Activity Logs")
+    st.markdown("Recent actions taken by the autopilot system")
+    
+    st_data = _load_state()
+    summaries = st_data.get("autopilot_summaries", [])[:20]
+    
+    if summaries:
+        for s in summaries[:10]:
+            with st.expander(f"⏰ {s.get('time', '')} — {s.get('subject', '')}"):
+                st.markdown(f"**From:** {s.get('from', '')}")
+                st.markdown(f"**Action:** `{s.get('action')}`")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Email Content:**")
+                    st.code(s.get("read_snippet", "")[:500], language="text")
+                with col2:
+                    st.markdown("**Agent Response:**")
+                    st.code(s.get("outgoing_snippet", "")[:500], language="html")
+    else:
+        st.info("No autopilot actions recorded yet")
+    
+    st.markdown("---")
+    st.markdown("### 📝 All Logs")
+    
+    if st.session_state.get("autopilot_logs"):
+        log_container = st.container(height=400)
+        with log_container:
+            for log in st.session_state["autopilot_logs"]:
+                st.caption(log)
+    else:
+        st.info("No logs available")
+
+# ==========================================
+# TAB 5: ACTION PLANS MANAGEMENT & HISTORY
+# ==========================================
+with tab5:
+    st.markdown("## 🎯 Action Plans Management")
+    st.markdown("Define and manage recurring automation tasks that execute when autopilot is ON")
+    
+    from frequency_formatter import format_frequency_display
+    
+    current_plans = get_action_plans()
+    
+    # Display existing plans
+    st.markdown("### 📋 Active Action Plans")
+    
+    to_delete_plan_index = None
+    for idx, plan in enumerate(current_plans):
+        with st.container():
+            col1, col2, col3, col4 = st.columns([1, 6, 2, 1])
+            
+            with col1:
+                enabled = st.checkbox(
+                    "✓",
+                    value=bool(plan.get("enabled", True)),
+                    key=f"plan_enable_{plan['id']}",
+                    label_visibility="collapsed"
+                )
+                plan["enabled"] = enabled
+            
+            with col2:
+                status = "🟢" if enabled else "⚪"
+                st.markdown(f"{status} **{plan['name']}**")
+                st.caption(plan.get("task", "—"))
+            
+            with col3:
+                # Use formatter for better display
+                freq_display = format_frequency_display(plan)
+                st.caption(f"📅 {freq_display}")
+            
+            with col4:
+                if st.button("🗑️", key=f"plan_remove_{plan['id']}"):
+                    to_delete_plan_index = idx
+        
+        st.markdown("---")
+    
+    if not current_plans:
+        st.info("📝 No action plans yet. Create one below!")
+    
+    if to_delete_plan_index is not None:
+        removed = current_plans.pop(to_delete_plan_index)
+        set_action_plans(current_plans)
+        st.success(f"✅ Removed plan '{removed.get('name')}'")
+        st.rerun()
+    
+    # Save button
+    if current_plans and st.button("💾 Save Action Plan Changes", type="primary", use_container_width=True):
+        set_action_plans(current_plans)
+        st.success("✅ Action plans saved!")
+    
+    st.markdown("---")
+    
+    # Add new plan
+    st.markdown("### ➕ Create New Action Plan")
+    st.info("💡 **Tip:** Use the chatbot to create action plans with advanced scheduling (hourly, daily, custom intervals in minutes/hours/days)")
+    
+    with st.form("new_plan_form"):
+        new_plan_name = st.text_input(
+            "Plan Name",
+            placeholder="e.g., VIP Customer Daily Summary"
+        )
+        
+        new_plan_task = st.text_area(
+            "Task Description",
+            placeholder="e.g., Fetch all unread emails from VIP customers, query KB for context, generate summary report",
+            height=100
+        )
+        
+        new_plan_frequency = st.selectbox(
+            "Execution Frequency",
+            options=["every_sweep", "hourly", "daily"],
+            format_func=lambda x: {
+                "every_sweep": "Every Autopilot Sweep",
+                "hourly": "Once per Hour",
+                "daily": "Once per Day"
+            }.get(x, x),
+            help="For advanced scheduling (custom intervals, specific times), use the chatbot"
+        )
+        
+        st.markdown("#### ⏹️ Stopping Condition (Optional)")
+        stopping_cond = st.text_area(
+            "Stopping Condition",
+            placeholder='e.g., "Stop after 5 executions" or "Stop when customer replies" or "Stop after December 31, 2024"',
+            help="Natural language description of when this plan should stop automatically",
+            height=80
+        )
+        
+        auto_delete = st.checkbox(
+            "Auto-delete when stopped",
+            value=False,
+            help="If checked, plan will be deleted when condition is met. Otherwise, it will be disabled."
+        )
+        
+        enabled_new_plan = st.checkbox("Enable immediately", value=True)
+        
+        submit_plan = st.form_submit_button("➕ Add Action Plan", use_container_width=True)
+        
+        if submit_plan:
+            if not new_plan_name.strip() or not new_plan_task.strip():
+                st.warning("⚠️ Please provide both name and task")
+            else:
+                new_plan = {
+                    "id": f"plan_{int(datetime.now(timezone.utc).timestamp())}",
+                    "name": new_plan_name.strip(),
+                    "task": new_plan_task.strip(),
+                    "enabled": bool(enabled_new_plan),
+                    "frequency": new_plan_frequency,
+                    "stopping_condition": stopping_cond.strip() if stopping_cond.strip() else None,
+                    "auto_delete_on_stop": bool(auto_delete),
+                    "last_executed": None,
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                }
+                current_plans.append(new_plan)
+                set_action_plans(current_plans)
+                st.success(f"✅ Added action plan: '{new_plan['name']}'")
+                st.rerun()
+    
+    st.markdown("---")
+    
+    # ==========================================
+    # EXECUTION HISTORY
+    # ==========================================
+    st.markdown("## 📊 Action Plan Execution History")
+    st.markdown("View past executions of your action plans")
+    
+    state = _load_action_plans_state()
+    history = state.get("execution_history", [])
+    
+    if history:
+        for entry in history[:20]:  # Show last 20
+            plan_id = entry.get("plan_id", "")
+            timestamp = entry.get("timestamp", "")
+            success = entry.get("success", False)
+            
+            # Find plan name
+            plans = get_action_plans()
+            plan_name = next((p["name"] for p in plans if p["id"] == plan_id), "Unknown")
+            
+            status_emoji = "✅" if success else "❌"
+            with st.expander(f"{status_emoji} {plan_name} - {timestamp}"):
+                st.markdown(f"**Plan:** {plan_name}")
+                st.markdown(f"**Plan ID:** `{plan_id}`")
+                st.markdown(f"**Timestamp:** {timestamp}")
+                st.markdown(f"**Status:** {'Success' if success else 'Failed'}")
+                
+                if entry.get("steps"):
+                    st.markdown("### Execution Steps:")
+                    for idx, step in enumerate(entry.get("steps", []), 1):
+                        step_type = step.get("type", "unknown")
+                        content = step.get("content", "")[:150]
+                        if step_type == "thought":
+                            st.caption(f"{idx}. 💭 {content}")
+                        elif step_type == "action":
+                            st.caption(f"{idx}. ⚙️ {content}")
+                        elif step_type == "observation":
+                            st.caption(f"{idx}. 📊 {content}...")
+                        elif step_type == "final_answer":
+                            st.success(f"**Result:** {content}")
+                
+                if entry.get("final_answer"):
+                    st.success(f"**Final Answer:** {entry['final_answer']}")
+                
+                if entry.get("error"):
+                    st.error(f"**Error:** {entry['error']}")
+    else:
+        st.info("No execution history yet. Enable action plans and autopilot to start.")
+
+# ==========================================
+# TAB 6: CONNECTION SETTINGS
+# ==========================================
+with tab6:
+    st.markdown("## 🔌 Exchange Web Services Connection")
+    st.markdown("Configure your Microsoft Exchange email account credentials")
+    
+    # Import EWS config helper
+    try:
+        from ews_config import save_ews_credentials, test_ews_connection, load_ews_credentials
+        ews_config_available = True
+    except ImportError:
+        ews_config_available = False
+        st.error("⚠️ ews_config.py not found - credential persistence disabled")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("###  📧 EWS Configuration")
+        
+        # Load current values
+        current_email = os.getenv("EWS_EMAIL", "")
+        current_host = os.getenv("EWS_HOST", "")
+        
+        input_email = st.text_input(
+            "Email Address",
+            value=current_email,
+            placeholder="sales-ai@company.com",
+            help="Your Exchange Web Services email address"
+        )
+        
+        input_pwd = st.text_input(
+            "Password",
+            value="",
+            type="password",
+            placeholder="Enter password",
+            help="Your EWS password (not stored in session, only in .env)"
+        )
+        
+        input_host = st.text_input(
+            "Exchange Server Host",
+            value=current_host,
+            placeholder="mail.company.com",
+            help="Exchange server hostname (optional, auto-detected if empty)"
+        )
+        
+        # Load current agent name
+        current_agent_name = os.getenv("AGENT_USER_NAME", "")
+        
+        input_agent_name = st.text_input(
+            "Signature Name",
+            value=current_agent_name,
+            placeholder="Cyfuture Sales Team",
+            help="Name to use in email signatures (e.g., 'John Doe' or 'Sales Team')"
+        )
+        
+        st.markdown("---")
+
+        
+        col_test, col_save = st.columns(2)
+        
+        with col_test:
+            if st.button("🧪 Test & Save Connection", type="primary", use_container_width=True):
+                if not input_email or not input_pwd:
+                    st.warning("⚠️ Please provide both email and password")
+                elif not ews_config_available:
+                    st.error("❌ Cannot save - ews_config module not available")
+                else:
+                    with st.spinner("Testing connection..."):
+                        success, message = test_ews_connection(input_email, input_pwd, input_host or None)
+                        
+                        if success:
+                            st.success(message)
+                            
+                            # Auto-save credentials if test succeeds
+                            with st.spinner("Saving credentials..."):
+                                save_success = save_ews_credentials(input_email, input_pwd, input_host, input_agent_name)
+                                
+                                if save_success:
+                                    # Reload credentials to apply immediately
+                                    if reload_credentials():
+                                        st.success("✅ Credentials saved and applied!")
+                                        st.info("ℹ️ No restart needed - credentials active now")
+                                    else:
+                                        st.warning("⚠️ Credentials saved but failed to reload. Please restart app.")
+                                else:
+                                    st.error("❌ Connection succeeded but failed to save credentials")
+                        else:
+                            st.error(message)
+                            st.warning("⚠️ Credentials NOT saved (connection test failed)")
+        
+        with col_save:
+            if st.button("💾 Save Without Testing", use_container_width=True):
+                if not input_email:
+                    st.warning("⚠️ Email address is required")
+                elif not ews_config_available:
+                    st.error("❌ Cannot save - ews_config module not available")
+                else:
+                    # Save to .env file without testing
+                    success = save_ews_credentials(input_email, input_pwd, input_host, input_agent_name)
+                    
+                    if success:
+                        # Reload credentials to apply immediately
+                        if reload_credentials():
+                            st.success("✅ Settings saved and applied!")
+                            st.warning("⚠️ Credentials not tested - verify connection before use")
+                        else:
+                            st.warning("⚠️ Settings saved but failed to reload. Please restart app.")
+                    else:
+                        st.error("❌ Failed to save settings")
+        
+        # Quick fetch test
+        st.markdown("---")
+        st.markdown("### 📬 Quick Email Fetch Test")
+        
+        if st.button("📥 Fetch 5 Unread Emails", use_container_width=True):
+            try:
+                from ews_tools2 import get_unread_batch
+                
+                with st.spinner("Fetching emails..."):
+                    emails = get_unread_batch(batch_size=5)
+                    
+                    if emails:
+                        st.success(f"✅ Found {len(emails)} unread emails")
+                        
+                        with st.expander("View email subjects"):
+                            for idx, email in enumerate(emails, 1):
+                                st.caption(f"{idx}. {email.get('subject', 'No Subject')} - From: {email.get('from', 'Unknown')}")
+                    else:
+                        st.info("📭 No unread emails found")
+                        
+            except Exception as e:
+                st.error(f"❌ Error fetching emails: {str(e)}")
+                st.caption("Make sure you've saved and tested the connection first")
+    
+    with col2:
+        st.markdown("### ℹ️ Connection Info")
+        
+        # Show current settings
+        current_creds = {
+            "Email": current_email or "Not set",
+            "Host": current_host or "Auto-detect",
+            "Password": "●●●●●●" if os.getenv("EWS_PASSWORD") else "Not set"
+        }
+        
+        st.info(
+            "**Current Settings:**\n" +
+            "\n".join([f"- {k}: `{v}`" for k, v in current_creds.items()])
+        )
+        
+        st.markdown("### 📋 Requirements")
+        st.info(
+            "**Required Permissions:**\n"
+            "- Valid Exchange Web Services account\n"
+            "- SMTP access enabled\n"
+            "- Calendar permissions (for scheduling)\n"
+            "- Mailbox read/write access"
+        )
+        
+        st.markdown("### 🔒 Security")
+        st.warning(
+            "**Important:**\n"
+            "- Credentials are saved to `.env` file\n"
+            "- Never commit `.env` to version control\n"
+            "- Use app-specific passwords when possible\n"
+            "- Restart app after saving to load credentials"
+        )
+        
+        st.markdown("### 💡 How to Use")
+        st.success(
+            "**Steps:**\n"
+            "1. Enter your email and password\n"
+            "2. Click '🧪 Test Connection' to verify\n"
+            "3. Click '💾 Save Settings' to persist\n"
+            "4. Use '📥 Fetch Emails' to test retrieval"
+        )
+
+# ==========================================
+# AUTOPILOT PERIODIC SWEEP
+# ==========================================
+if st.session_state.get(AUTO_KEY):
+    period_min = get_autopilot_period_minutes()
+    interval_ms = max(1, int(period_min)) * 60_000
+    
+    try:
+        st_autorefresh(interval=interval_ms, key="autopilot_tick")
+    except Exception:
+        pass
+    
+    # Execute sweep if interval elapsed
+    now = datetime.now(timezone.utc)
+    last = st.session_state.get(LAST_RUN_KEY)
+    if not last or (now - last).total_seconds() > (period_min * 60):
+        # Double-check autopilot is still enabled before starting expensive operation
+        if not st.session_state.get(AUTO_KEY):
+            pass  # User turned off autopilot, skip execution
+        else:
+            with st.spinner("🤖 Running autopilot sweep..."):
+                try:
+                    # Execute email autopilot (rules) with hands_free state
+                    logs = autopilot_once(hands_free=hands_free)
+                    st.session_state.autopilot_logs.extend(logs)
+                    
+                    # Check if autopilot still enabled after email processing
+                    if not st.session_state.get(AUTO_KEY):
+                        st.info("⏸️ Autopilot stopped by user after email processing")
+                    else:
+                        # Execute enabled action plans
+                        action_plans = get_action_plans()
+                        enabled_plans = [p for p in action_plans if p.get("enabled")]
+                        
+                        for plan in enabled_plans:
+                            # Check before each plan execution if autopilot still enabled
+                            if not st.session_state.get(AUTO_KEY):
+                                st.info("⏸️ Autopilot stopped by user during action plan execution")
+                                break
+                            
+                            # Check frequency
+                            frequency = plan.get("frequency", "every_sweep")
+                            last_exec = plan.get("last_executed")
+                            should_execute = False
+                            
+                            if frequency == "every_sweep":
+                                should_execute = True
+                            elif frequency == "hourly" and last_exec:
+                                last_dt = datetime.fromisoformat(last_exec)
+                                if (now - last_dt.replace(tzinfo=timezone.utc)).total_seconds() > 3600:
+                                    should_execute = True
+                            elif frequency == "daily" and last_exec:
+                                last_dt = datetime.fromisoformat(last_exec)
+                                if (now - last_dt.replace(tzinfo=timezone.utc)).total_seconds() > 86400:
+                                    should_execute = True
+                            elif not last_exec:
+                                should_execute = True
+                            
+                            if should_execute:
+                                try:
+                                        # Execute action plan
+                                        steps = list(execute_custom_action_plan(
+                                            plan["task"],
+                                            hands_free,
+                                            plan_container=None
+                                        ))
+                                        
+                                        # Record execution
+                                        final_answer = next(
+                                            (s.content for s in reversed(steps) if s.step_type == "final_answer"),
+                                            "Completed"
+                                        )
+                                        
+                                        add_action_plan_execution(plan["id"], {
+                                            "success": True,
+                                            "steps": [{"type": s.step_type, "content": s.content} for s in steps],
+                                            "final_answer": final_answer
+                                        })
+                                        
+                                        # Update last executed
+                                        plan["last_executed"] = now.isoformat()
+                                        set_action_plans(action_plans)
+                                        
+                                        st.session_state.autopilot_logs.append(
+                                            f"[ACTION PLAN] Executed '{plan['name']}': {final_answer[:100]}"
+                                        )
+                                except Exception as e:
+                                    add_action_plan_execution(plan["id"], {
+                                        "success": False,
+                                        "error": str(e)
+                                    })
+                                    st.session_state.autopilot_logs.append(
+                                        f"[ACTION PLAN ERROR] {plan['name']}: {str(e)}"
+                                    )
+                        
+                        # Only update last run timestamp if autopilot still enabled
+                        if st.session_state.get(AUTO_KEY):
+                            st.session_state[LAST_RUN_KEY] = now
+                except Exception as e:
+                    st.session_state.autopilot_logs.append(f"[ERROR] {str(e)}")
+

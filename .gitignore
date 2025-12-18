@@ -1,0 +1,83 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Environment Variables & Credentials
+.env
+.env.local
+.env.*.local
+
+# State Files
+autopilot_state.json
+action_plans_state.json
+processed_mails.json
+*.lock
+
+# Logs
+*.log
+action_plan_service.log.*
+autopilot_service.log.*
+action_plan_service_stdout.log
+action_plan_service_stderr.log
+autopilot_service_stdout.log
+autopilot_service_stderr.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Qdrant local storage
+qdrant_storage/
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+
+# NSSM (Windows Service Manager)
+nssm.exe
+
+# Deployment packages
+*.zip
+*.tar.gz
+
+# Test files
+test_*.py
+*_test.py
+
+# Browser recordings/screenshots (from artifacts)
+*.webp
+*.png
+
+# Node modules (if any)
+node_modules/

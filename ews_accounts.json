@@ -1,0 +1,15 @@
+{
+  "accounts": [
+    {
+      "id": "ews_1764518824",
+      "name": "jayant",
+      "email": "jayant.verma@cyfuture.com",
+      "host": "mail.cyfuture.com",
+      "created_at": "2025-11-30T21:37:04.471136",
+      "updated_at": "2025-11-30T21:37:04.471147",
+      "last_tested": "2025-11-30T21:52:20.202835",
+      "test_status": "failed"
+    }
+  ],
+  "active_account_id": "ews_1764518824"
+}

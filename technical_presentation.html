@@ -1,0 +1,1251 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SalesAgent - Technical Presentation</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1e40af;
+            --secondary: #7c3aed;
+            --accent: #10b981;
+            --dark: #0f172a;
+            --dark-light: #1e293b;
+            --gray: #475569;
+            --light: #f1f5f9;
+            --white: #ffffff;
+            --gradient-1: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --gradient-2: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+            --gradient-3: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--dark);
+            color: var(--light);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+
+        /* Hero Section */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--gradient-1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255, 255, 255, 0.1) 1px, transparent 1px);
+            background-size: 50px 50px;
+            animation: grid-move 20s linear infinite;
+        }
+
+        @keyframes grid-move {
+            0% {
+                transform: translate(0, 0);
+            }
+
+            100% {
+                transform: translate(50px, 50px);
+            }
+        }
+
+        .hero-content {
+            text-align: center;
+            z-index: 1;
+            animation: fadeInUp 1s ease;
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .hero h1 {
+            font-size: 4rem;
+            font-weight: 800;
+            margin-bottom: 1rem;
+            text-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .hero .subtitle {
+            font-size: 1.5rem;
+            opacity: 0.9;
+            margin-bottom: 2rem;
+        }
+
+        .hero .tech-stack {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .tech-badge {
+            background: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(10px);
+            padding: 0.5rem 1.5rem;
+            border-radius: 50px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        /* Section Styling */
+        section {
+            padding: 5rem 0;
+            position: relative;
+        }
+
+        section:nth-child(even) {
+            background: var(--dark-light);
+        }
+
+        .section-header {
+            text-align: center;
+            margin-bottom: 4rem;
+        }
+
+        .section-header h2 {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            background: var(--gradient-2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .section-header p {
+            font-size: 1.2rem;
+            color: var(--gray);
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        /* Architecture Diagram */
+        .architecture-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+
+        .arch-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1rem;
+            padding: 2rem;
+            transition: all 0.3s ease;
+        }
+
+        .arch-card:hover {
+            transform: translateY(-5px);
+            border-color: var(--primary);
+            box-shadow: 0 10px 40px rgba(37, 99, 235, 0.3);
+        }
+
+        .arch-card h3 {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+            color: var(--accent);
+        }
+
+        .arch-card ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .arch-card li {
+            padding: 0.5rem 0;
+            padding-left: 1.5rem;
+            position: relative;
+        }
+
+        .arch-card li::before {
+            content: '→';
+            position: absolute;
+            left: 0;
+            color: var(--primary);
+            font-weight: bold;
+        }
+
+        /* Mermaid Diagrams */
+        .diagram-container {
+            background: var(--white);
+            border-radius: 1rem;
+            padding: 2rem;
+            margin: 2rem 0;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+        }
+
+        /* Feature Grid */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+
+        .feature-card {
+            background: var(--gradient-2);
+            border-radius: 1rem;
+            padding: 2.5rem;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1));
+            transform: translateX(-100%);
+            transition: transform 0.5s;
+        }
+
+        .feature-card:hover::before {
+            transform: translateX(100%);
+        }
+
+        .feature-card:hover {
+            transform: scale(1.05);
+            box-shadow: 0 20px 60px rgba(37, 99, 235, 0.4);
+        }
+
+        .feature-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+
+        .feature-card h3 {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .feature-card p {
+            opacity: 0.9;
+            line-height: 1.8;
+        }
+
+        /* Comparison Table */
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 2rem 0;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 1rem;
+            overflow: hidden;
+        }
+
+        .comparison-table th {
+            background: var(--gradient-2);
+            padding: 1.5rem;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        .comparison-table td {
+            padding: 1.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .comparison-table tr:hover {
+            background: rgba(37, 99, 235, 0.1);
+        }
+
+        .check {
+            color: var(--accent);
+            font-size: 1.5rem;
+        }
+
+        /* Code Block */
+        .code-block {
+            background: #1e293b;
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            overflow-x: auto;
+            border-left: 4px solid var(--primary);
+        }
+
+        .code-block code {
+            font-family: 'Fira Code', monospace;
+            color: #94a3b8;
+            font-size: 0.9rem;
+        }
+
+        /* Stats Section */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 2rem;
+            margin: 3rem 0;
+        }
+
+        .stat-card {
+            text-align: center;
+            padding: 2rem;
+            background: var(--gradient-3);
+            border-radius: 1rem;
+        }
+
+        .stat-number {
+            font-size: 3rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-label {
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+
+        /* Capabilities List */
+        .capability-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 1.5rem;
+            margin: 3rem 0;
+        }
+
+        .capability-item {
+            background: rgba(255, 255, 255, 0.05);
+            border-left: 4px solid var(--accent);
+            padding: 1.5rem;
+            border-radius: 0.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .capability-item:hover {
+            background: rgba(16, 185, 129, 0.1);
+            transform: translateX(5px);
+        }
+
+        .capability-item h4 {
+            color: var(--accent);
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .capability-item h4::before {
+            content: '✓';
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            background: var(--accent);
+            color: var(--dark);
+            border-radius: 50%;
+            text-align: center;
+            line-height: 24px;
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+
+        .capability-item p {
+            color: var(--light);
+            opacity: 0.85;
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+
+
+        /* Footer */
+        footer {
+            background: var(--dark);
+            padding: 3rem 0;
+            text-align: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        footer p {
+            color: var(--gray);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2.5rem;
+            }
+
+            .hero .subtitle {
+                font-size: 1.2rem;
+            }
+
+            .section-header h2 {
+                font-size: 2rem;
+            }
+
+            .architecture-grid,
+            .feature-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Scroll Animation */
+        .fade-in {
+            opacity: 0;
+            transform: translateY(20px);
+            animation: fadeInUp 0.8s ease forwards;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="hero-content">
+            <h1>🤖 SalesAgent AI</h1>
+            <p class="subtitle">Intelligent Email Automation with ReAct Architecture</p>
+            <div class="tech-stack">
+                <span class="tech-badge">Python</span>
+                <span class="tech-badge">LangChain</span>
+                <span class="tech-badge">ReAct Agent</span>
+                <span class="tech-badge">EWS API</span>
+                <span class="tech-badge">RAG</span>
+                <span class="tech-badge">Streamlit</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- System Architecture -->
+    <section id="architecture">
+        <div class="container">
+            <div class="section-header">
+                <h2>🏗️ System Architecture</h2>
+                <p>Enterprise-grade AI agent with modular design and scalable components</p>
+            </div>
+
+            <div class="diagram-container">
+                <div class="mermaid">
+                    graph TB
+                    subgraph "User Interface Layer"
+                    UI[Streamlit UI]
+                    WebAPI[Web API Server]
+                    end
+
+                    subgraph "Core Agent Layer"
+                    ReAct[ReAct Agent Engine]
+                    LLM[LLM - GPT/Local Model]
+                    Tools[Tool Registry - 35+ Tools]
+                    end
+
+                    subgraph "Automation Services"
+                    Autopilot[Autopilot Service]
+                    ActionPlans[Action Plans Service]
+                    Scheduler[Task Scheduler]
+                    end
+
+                    subgraph "Knowledge & Storage"
+                    RAG[RAG System - Qdrant]
+                    KB[Knowledge Base]
+                    State[State Management - JSON]
+                    end
+
+                    subgraph "External Integrations"
+                    EWS[Exchange Web Services]
+                    WebSearch[Web Search API]
+                    Calendar[Calendar Integration]
+                    end
+
+                    UI --> ReAct
+                    WebAPI --> ReAct
+                    ReAct --> LLM
+                    ReAct --> Tools
+                    Tools --> RAG
+                    Tools --> EWS
+                    Tools --> WebSearch
+                    Tools --> Calendar
+                    Autopilot --> ReAct
+                    ActionPlans --> ReAct
+                    ActionPlans --> Scheduler
+                    RAG --> KB
+                    ReAct --> State
+
+                    style ReAct fill:#667eea,stroke:#333,stroke-width:3px,color:#fff
+                    style LLM fill:#764ba2,stroke:#333,stroke-width:2px,color:#fff
+                    style Tools fill:#2563eb,stroke:#333,stroke-width:2px,color:#fff
+                    style Autopilot fill:#10b981,stroke:#333,stroke-width:2px,color:#fff
+                    style ActionPlans fill:#10b981,stroke:#333,stroke-width:2px,color:#fff
+                </div>
+            </div>
+
+            <div class="architecture-grid">
+                <div class="arch-card">
+                    <h3>🧠 ReAct Agent Core</h3>
+                    <ul>
+                        <li>Reasoning + Acting pattern</li>
+                        <li>Multi-step task execution</li>
+                        <li>Tool orchestration</li>
+                        <li>Context-aware decisions</li>
+                        <li>Error handling & retries</li>
+                    </ul>
+                </div>
+                <div class="arch-card">
+                    <h3>🔧 Tool Ecosystem</h3>
+                    <ul>
+                        <li>35+ specialized tools</li>
+                        <li>Email operations (send, reply, forward)</li>
+                        <li>Calendar & scheduling</li>
+                        <li>Knowledge base queries</li>
+                        <li>Web search integration</li>
+                    </ul>
+                </div>
+                <div class="arch-card">
+                    <h3>⚙️ Automation Layer</h3>
+                    <ul>
+                        <li>Background services (Windows/Linux)</li>
+                        <li>Rule-based autopilot</li>
+                        <li>Scheduled action plans</li>
+                        <li>Hands-free operation mode</li>
+                        <li>Execution locking</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ReAct Workflow -->
+    <section id="react-workflow">
+        <div class="container">
+            <div class="section-header">
+                <h2>🔄 ReAct Agent Workflow</h2>
+                <p>Self-reasoning agent that thinks, acts, and learns from observations</p>
+            </div>
+
+            <div class="diagram-container">
+                <div class="mermaid">
+                    sequenceDiagram
+                    participant User
+                    participant ReAct as ReAct Agent
+                    participant LLM
+                    participant Tools
+                    participant EWS
+
+                    User->>ReAct: "Check and reply to unread emails"
+                    ReAct->>LLM: Thought: Need to fetch unread emails first
+                    LLM-->>ReAct: Action: dynamic_mail_fetch_tool(unread=True)
+                    ReAct->>Tools: Execute dynamic_mail_fetch_tool
+                    Tools->>EWS: Fetch unread emails
+                    EWS-->>Tools: Return 5 unread emails
+                    Tools-->>ReAct: Observation: Found 5 emails
+
+                    ReAct->>LLM: Thought: Need to check KB for pricing info
+                    LLM-->>ReAct: Action: query_knowledge_base("pricing")
+                    ReAct->>Tools: Execute query_knowledge_base
+                    Tools-->>ReAct: Observation: Pricing data retrieved
+
+                    ReAct->>LLM: Thought: Draft reply with pricing info
+                    LLM-->>ReAct: Action: reply_inline(item_id, body_html)
+                    ReAct->>Tools: Execute reply_inline
+                    Tools->>EWS: Send reply
+                    EWS-->>Tools: Success
+                    Tools-->>ReAct: Observation: Reply sent
+
+                    ReAct->>LLM: Thought: Task complete
+                    LLM-->>ReAct: Action: end_task("Replied to 5 emails")
+                    ReAct-->>User: Final Answer: Successfully processed emails
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Core Features -->
+    <section id="features">
+        <div class="container">
+            <div class="section-header">
+                <h2>✨ Core Features</h2>
+                <p>Enterprise-ready capabilities for intelligent email management</p>
+            </div>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🤖</div>
+                    <h3>Intelligent Email Processing</h3>
+                    <p>AI-powered email triage, drafting, and replies with context awareness. Preserves CC/BCC,
+                        maintains thread continuity, and uses proper signatures.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🔍</div>
+                    <h3>RAG-Powered Knowledge</h3>
+                    <p>Query company knowledge base using vector search (Qdrant). Retrieves accurate pricing, product
+                        info, and policies for informed responses.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <h3>Autopilot Mode</h3>
+                    <p>Rule-based automatic email processing with customizable triggers. Runs as background service with
+                        configurable intervals and hands-free operation.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">📅</div>
+                    <h3>Action Plans</h3>
+                    <p>Schedule periodic tasks with natural language. Supports custom frequencies, stopping conditions,
+                        retry logic, and email reference tracking.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🛠️</div>
+                    <h3>35+ Specialized Tools</h3>
+                    <p>Comprehensive tool ecosystem for email operations, calendar scheduling, web search, knowledge
+                        queries, and more. Filtered execution context.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🌐</div>
+                    <h3>Multi-Platform Deployment</h3>
+                    <p>Windows services (NSSM) and Linux systemd support. Background services with automatic restart,
+                        logging, and state persistence.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Capabilities List -->
+    <section id="capabilities">
+        <div class="container">
+            <div class="section-header">
+                <h2>🎯 What It Can Do</h2>
+                <p>Comprehensive list of SalesAgent capabilities and functions</p>
+            </div>
+
+            <div class="capability-list">
+                <!-- Email Management -->
+                <div class="capability-item">
+                    <h4>📧 Send & Reply to Emails</h4>
+                    <p>Compose, send, and reply to emails with intelligent content generation, HTML formatting, and
+                        automatic signatures</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🔄 Thread Management</h4>
+                    <p>Maintain email conversation threads with reply_inline, preserve CC/BCC recipients, and track
+                        conversation history</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>📨 Forward & Draft Emails</h4>
+                    <p>Forward emails to multiple recipients, save drafts for review, and manage email lifecycle</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🔍 Smart Email Search</h4>
+                    <p>Search emails by sender, subject, date, unread status, and custom filters with
+                        dynamic_mail_fetch_tool</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>📥 Bulk Email Operations</h4>
+                    <p>Fetch, process, and manage multiple emails simultaneously with batch operations</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>✅ Email Status Management</h4>
+                    <p>Mark emails as read/unread, delete, archive, and organize inbox automatically</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🔔 Unresponded Email Tracking</h4>
+                    <p>Identify and track emails that haven't received responses, automatically follow up on pending
+                        conversations</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>📅 Schedule Meetings</h4>
+                    <p>Check calendar availability, propose time slots, send ICS invites, and create calendar events</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🗓️ Calendar Integration</h4>
+                    <p>Fetch calendar events, check availability, and manage scheduling conflicts intelligently</p>
+                </div>
+
+                <!-- Knowledge & Intelligence -->
+                <div class="capability-item">
+                    <h4>🧠 Query Knowledge Base</h4>
+                    <p>Search company knowledge base using RAG (Retrieval-Augmented Generation) for accurate pricing,
+                        products, and policies</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🌐 Web Search Integration</h4>
+                    <p>Perform web searches for industry insights, competitor information, and market trends</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>📚 Add to Knowledge Base</h4>
+                    <p>Expand knowledge base with new documents, policies, and information for future queries</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>💡 Context-Aware Responses</h4>
+                    <p>Generate intelligent, context-aware email responses based on email content, history, and company
+                        knowledge</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🎨 HTML Email Formatting</h4>
+                    <p>Create professional emails with tables, headings, lists, links, and rich formatting</p>
+                </div>
+
+                <!-- Automation & Scheduling -->
+                <div class="capability-item">
+                    <h4>🤖 Rule-Based Automation</h4>
+                    <p>Create custom autopilot rules for automatic email processing based on sender, subject, content,
+                        or other criteria</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>⏰ Scheduled Task Execution</h4>
+                    <p>Create action plans with custom frequencies (hourly, daily, weekly, custom intervals)</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🛑 Stopping Conditions</h4>
+                    <p>Define natural language stopping conditions (e.g., "Stop when user replies," "Stop after 5
+                        executions")</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🔁 Automatic Retries</h4>
+                    <p>Configurable retry logic with delay intervals for failed task executions</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>📧 Email Reference Tracking</h4>
+                    <p>Track specific emails in action plans using item_id and changekey for precise follow-ups</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🚀 Hands-Free Operation</h4>
+                    <p>Enable automatic email sending for routine tasks or save as drafts for review</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>📊 Execution History</h4>
+                    <p>Track execution history, success/failure rates, and audit all automated actions</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🔐 Credential Management</h4>
+                    <p>Securely manage Exchange credentials with runtime reload capability (.env based)</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>⚠️ Spam Detection</h4>
+                    <p>Automatically identify and ignore spam, newsletters, and unwanted automated notifications</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🚨 Exception Escalation</h4>
+                    <p>Escalate high-risk emails (legal, security, compliance) to human operators for review</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>💬 Human Collaboration</h4>
+                    <p>Request human assistance for complex decisions, chat with operators, and inform users of
+                        important actions</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>📝 Multi-Language Support</h4>
+                    <p>Process and respond to emails in multiple languages with appropriate context awareness</p>
+                </div>
+
+                <div class="capability-item">
+                    <h4>🔄 Background Services</h4>
+                    <p>Run as Windows (NSSM) or Linux (systemd) background services with automatic restart and logging
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Autopilot System -->
+    <section id="autopilot">
+        <div class="container">
+            <div class="section-header">
+                <h2>🚁 Autopilot System</h2>
+                <p>Autonomous email processing with rule-based intelligence</p>
+            </div>
+
+            <div class="diagram-container">
+                <div class="mermaid">
+                    flowchart TD
+                    Start([Autopilot Service Start]) --> CheckEnabled{Service Enabled?}
+                    CheckEnabled -->|No| Sleep[Sleep 30s]
+                    Sleep --> CheckEnabled
+                    CheckEnabled -->|Yes| FetchEmails[Fetch Unread/Unresponded Emails]
+                    FetchEmails --> FilterProcessed[Filter Already Processed]
+                    FilterProcessed --> CheckNew{New Emails?}
+                    CheckNew -->|No| Sleep
+                    CheckNew -->|Yes| LoadRules[Load Active Rules]
+                    LoadRules --> ProcessEmail[Process Email with ReAct]
+
+                    ProcessEmail --> CheckRule{Evaluate Rules}
+                    CheckRule -->|Pricing Query| QueryKB[Query Knowledge Base]
+                    CheckRule -->|Demo Request| ScheduleMeeting[Schedule Meeting]
+                    CheckRule -->|Follow-up| ReplyThread[Reply in Thread]
+                    CheckRule -->|Spam| MarkSpam[Mark as Spam]
+
+                    QueryKB --> DraftReply[Draft Reply]
+                    ScheduleMeeting --> DraftReply
+                    ReplyThread --> DraftReply
+                    MarkSpam --> MarkRead
+
+                    DraftReply --> CheckHandsFree{Hands-free ON?}
+                    CheckHandsFree -->|Yes| SendEmail[Send Email]
+                    CheckHandsFree -->|No| SaveDraft[Save as Draft]
+
+                    SendEmail --> MarkRead[Mark as Read]
+                    SaveDraft --> MarkRead
+                    MarkRead --> SaveProcessed[Save Processed ID]
+                    SaveProcessed --> CheckMore{More Emails?}
+                    CheckMore -->|Yes| ProcessEmail
+                    CheckMore -->|No| Sleep
+
+                    style Start fill:#10b981,stroke:#333,stroke-width:2px,color:#fff
+                    style ProcessEmail fill:#2563eb,stroke:#333,stroke-width:2px,color:#fff
+                    style QueryKB fill:#7c3aed,stroke:#333,stroke-width:2px,color:#fff
+                    style SendEmail fill:#f59e0b,stroke:#333,stroke-width:2px,color:#fff
+                </div>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-number">5</div>
+                    <div class="stat-label">Default Rules</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">∞</div>
+                    <div class="stat-label">Custom Rules</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">24/7</div>
+                    <div class="stat-label">Monitoring</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">100%</div>
+                    <div class="stat-label">Automated</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Action Plans -->
+    <section id="action-plans">
+        <div class="container">
+            <div class="section-header">
+                <h2>🎯 Action Plans System</h2>
+                <p>Scheduled task execution with intelligent stopping conditions</p>
+            </div>
+
+            <div class="diagram-container">
+                <div class="mermaid">
+                    stateDiagram-v2
+                    [*] --> Created: User creates action plan
+                    Created --> Enabled: Plan activated
+                    Enabled --> Scheduled: Next execution calculated
+
+                    Scheduled --> CheckTime: Service checks time
+                    CheckTime --> Scheduled: Not due yet
+                    CheckTime --> EvaluateCondition: Due for execution
+
+                    EvaluateCondition --> Stopped: Stopping condition met
+                    EvaluateCondition --> Execute: Condition not met
+
+                    Execute --> Success: Execution successful
+                    Execute --> Failed: Execution failed
+
+                    Success --> Scheduled: Calculate next run
+                    Failed --> Retry: Retry < max_retries Failed --> Scheduled: Retry exhausted
+                        Retry --> Execute: Wait retry_delay
+
+                        Stopped --> Disabled: Auto-disable
+                        Stopped --> Deleted: Auto-delete
+                        Disabled --> [*]
+                        Deleted --> [*]
+
+                        note right of EvaluateCondition
+                        Examples:
+                        - Stop after 5 executions
+                        - Stop when user replies
+                        - Stop after 7 days
+                        - Custom conditions
+                        end note
+                </div>
+            </div>
+
+            <div class="code-block">
+                <code>
+# Example Action Plan Creation
+create_action_plan(
+    name="Follow-up on Demo Request",
+    task="""Check email [item_id: 'AAMk...' | To: 'john@company.com'] 
+            for response. If no reply, send follow-up.""",
+    frequency="custom",
+    custom_interval_minutes=60,  # Every hour
+    stopping_condition="Stop when customer replies or after 3 follow-ups",
+    max_retries=2,
+    retry_delay_minutes=15
+)
+                </code>
+            </div>
+
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Feature</th>
+                        <th>Action Plans</th>
+                        <th>Autopilot</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Scheduled Execution</td>
+                        <td><span class="check">✓</span> Custom intervals</td>
+                        <td><span class="check">✓</span> Fixed interval</td>
+                    </tr>
+                    <tr>
+                        <td>Stopping Conditions</td>
+                        <td><span class="check">✓</span> Natural language</td>
+                        <td>✗ N/A</td>
+                    </tr>
+                    <tr>
+                        <td>Email Reference</td>
+                        <td><span class="check">✓</span> Specific emails</td>
+                        <td><span class="check">✓</span> Unread/unresponded</td>
+                    </tr>
+                    <tr>
+                        <td>Retry Logic</td>
+                        <td><span class="check">✓</span> Configurable</td>
+                        <td>✗ Single attempt</td>
+                    </tr>
+                    <tr>
+                        <td>Rule-Based</td>
+                        <td>✗ Task-specific</td>
+                        <td><span class="check">✓</span> Global rules</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Tool Ecosystem -->
+    <section id="tools">
+        <div class="container">
+            <div class="section-header">
+                <h2>🔧 Tool Ecosystem</h2>
+                <p>35+ specialized tools for comprehensive email automation</p>
+            </div>
+
+            <div class="architecture-grid">
+                <div class="arch-card">
+                    <h3>📧 Email Operations</h3>
+                    <ul>
+                        <li>send_mail_tool</li>
+                        <li>reply_inline</li>
+                        <li>forward_email</li>
+                        <li>fetch_email</li>
+                        <li>batch_fetch_emails</li>
+                        <li>search_and_fetch_emails</li>
+                        <li>dynamic_mail_fetch_tool</li>
+                        <li>mark_read / mark_unread</li>
+                        <li>delete_email</li>
+                        <li>follow_up_email</li>
+                        <li>follow_up_thread_tool</li>
+                    </ul>
+                </div>
+                <div class="arch-card">
+                    <h3>📅 Calendar & Scheduling</h3>
+                    <ul>
+                        <li>send_ics_invite</li>
+                        <li>schedule_with_check</li>
+                        <li>check_calendar_availability</li>
+                        <li>fetch_calendar_events</li>
+                        <li>create_calendar_event</li>
+                    </ul>
+                </div>
+                <div class="arch-card">
+                    <h3>🔍 Knowledge & Search</h3>
+                    <ul>
+                        <li>query_knowledge_base</li>
+                        <li>web_search</li>
+                        <li>add_to_knowledge_base</li>
+                        <li>list_knowledge_collections</li>
+                    </ul>
+                </div>
+                <div class="arch-card">
+                    <h3>🤖 Automation</h3>
+                    <ul>
+                        <li>create_action_plan</li>
+                        <li>list_action_plans</li>
+                        <li>update_action_plan</li>
+                        <li>delete_action_plan</li>
+                        <li>create_autopilot_rule</li>
+                        <li>list_autopilot_rules</li>
+                        <li>delete_autopilot_rule</li>
+                    </ul>
+                </div>
+                <div class="arch-card">
+                    <h3>⚙️ Utility</h3>
+                    <ul>
+                        <li>current_time</li>
+                        <li>inform_user</li>
+                        <li>chat_with_human</li>
+                        <li>end_task</li>
+                        <li>set_credentials_tool</li>
+                        <li>escalate</li>
+                        <li>ignore_spam</li>
+                        <li>auto_handle_email</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Deployment -->
+    <section id="deployment">
+        <div class="container">
+            <div class="section-header">
+                <h2>🚀 Deployment Architecture</h2>
+                <p>Cross-platform background services for enterprise deployment</p>
+            </div>
+
+            <div class="diagram-container">
+                <div class="mermaid">
+                    graph LR
+                    subgraph "Windows Deployment"
+                    NSSM[NSSM Service Manager]
+                    WinService1[Autopilot Service]
+                    WinService2[Action Plan Service]
+                    WinUI[Streamlit UI]
+
+                    NSSM --> WinService1
+                    NSSM --> WinService2
+                    end
+
+                    subgraph "Linux Deployment"
+                    Systemd[systemd]
+                    LinuxService1[autopilot-service.service]
+                    LinuxService2[action-plan-service.service]
+                    LinuxUI[Streamlit UI]
+
+                    Systemd --> LinuxService1
+                    Systemd --> LinuxService2
+                    end
+
+                    subgraph "Shared Components"
+                    Python[Python 3.10+]
+                    Venv[Virtual Environment]
+                    EnvFile[.env Configuration]
+                    State[State Files - JSON]
+                    Logs[Service Logs]
+                    end
+
+                    WinService1 --> Python
+                    WinService2 --> Python
+                    LinuxService1 --> Python
+                    LinuxService2 --> Python
+                    Python --> Venv
+                    Python --> EnvFile
+                    Python --> State
+                    Python --> Logs
+
+                    style NSSM fill:#2563eb,stroke:#333,stroke-width:2px,color:#fff
+                    style Systemd fill:#10b981,stroke:#333,stroke-width:2px,color:#fff
+                    style Python fill:#7c3aed,stroke:#333,stroke-width:2px,color:#fff
+                </div>
+            </div>
+
+            <div class="architecture-grid">
+                <div class="arch-card">
+                    <h3>🪟 Windows Services</h3>
+                    <ul>
+                        <li>NSSM-based service wrapper</li>
+                        <li>Automatic restart on failure</li>
+                        <li>install_service.bat scripts</li>
+                        <li>Service control via UI</li>
+                        <li>Windows Event Log integration</li>
+                    </ul>
+                </div>
+                <div class="arch-card">
+                    <h3>🐧 Linux Services</h3>
+                    <ul>
+                        <li>Systemd service files</li>
+                        <li>RestartSec=5s policy</li>
+                        <li>User-level permissions</li>
+                        <li>StandardOutput/Error logging</li>
+                        <li>systemctl start/stop/status</li>
+                    </ul>
+                </div>
+                <div class="arch-card">
+                    <h3>⚙️ Configuration</h3>
+                    <ul>
+                        <li>Environment-based config (.env)</li>
+                        <li>Runtime credential reload</li>
+                        <li>Configurable intervals</li>
+                        <li>Hands-free mode toggle</li>
+                        <li>Log level control</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Technical Specs -->
+    <section id="specs">
+        <div class="container">
+            <div class="section-header">
+                <h2>📊 Technical Specifications</h2>
+                <p>Performance, scalability, and integration details</p>
+            </div>
+
+            <div class="architecture-grid">
+                <div class="arch-card">
+                    <h3>Performance Metrics</h3>
+                    <ul>
+                        <li>Email processing: ~3-5 seconds</li>
+                        <li>RAG query latency: ~500ms</li>
+                        <li>Concurrent execution locking</li>
+                        <li>Duplicate prevention</li>
+                        <li>Max 50 iterations per task</li>
+                    </ul>
+                </div>
+                <div class="arch-card">
+                    <h3>Scalability</h3>
+                    <ul>
+                        <li>Handles 1000+ emails/day</li>
+                        <li>Stateless agent design</li>
+                        <li>File-based state management</li>
+                        <li>Vector DB for knowledge scaling</li>
+                        <li>Execution history: 100 records</li>
+                    </ul>
+                </div>
+                <div class="arch-card">
+                    <h3>Integrations</h3>
+                    <ul>
+                        <li>Exchange Web Services (EWS)</li>
+                        <li>Qdrant Vector Database</li>
+                        <li>OpenAI / Local LLM</li>
+                        <li>Web Search APIs</li>
+                        <li>Calendar systems (ICS)</li>
+                    </ul>
+                </div>
+                <div class="arch-card">
+                    <h3>Security & Reliability</h3>
+                    <ul>
+                        <li>Credential encryption (.env)</li>
+                        <li>Execution lock mechanisms</li>
+                        <li>Automatic retry logic</li>
+                        <li>Error handling & logging</li>
+                        <li>Graceful shutdown (SIGTERM)</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-number">35+</div>
+                    <div class="stat-label">Tools</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">5</div>
+                    <div class="stat-label">Services</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">2</div>
+                    <div class="stat-label">Platforms</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">100%</div>
+                    <div class="stat-label">Uptime Target</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <p>© 2025 SalesAgent AI - Enterprise Email Automation System</p>
+            <p style="margin-top: 0.5rem; font-size: 0.9rem;">Built with Python, LangChain, ReAct Architecture &
+                Exchange Web Services</p>
+        </div>
+    </footer>
+
+    <script>
+        // Initialize Mermaid
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            themeVariables: {
+                primaryColor: '#2563eb',
+                primaryTextColor: '#1e293b',
+                primaryBorderColor: '#1e40af',
+                lineColor: '#475569',
+                secondaryColor: '#7c3aed',
+                tertiaryColor: '#10b981'
+            }
+        });
+
+        // Scroll animations
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: '0px 0px -100px 0px'
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('fade-in');
+                }
+            });
+        }, observerOptions);
+
+        document.querySelectorAll('.arch-card, .feature-card, .diagram-container').forEach(el => {
+            observer.observe(el);
+        });
+    </script>
+</body>
+
+</html>

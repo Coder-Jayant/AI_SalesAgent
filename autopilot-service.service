@@ -1,0 +1,22 @@
+[Unit]
+Description=Autopilot Email Processing Service
+After=network.target
+
+[Service]
+Type=simple
+# TODO: Replace 'salesagent' with your actual Linux username
+User=salesagent
+# TODO: Replace with your actual project path on Linux server
+WorkingDirectory=/home/salesagent/SalesAgent/SalesAgent15_/required_files_project
+# TODO: Replace with your actual Python virtual environment path
+Environment="PATH=/home/salesagent/SalesAgent/venv/bin"
+ExecStart=/home/salesagent/SalesAgent/venv/bin/python /home/salesagent/SalesAgent/SalesAgent15_/required_files_project/autopilot_service.py
+Restart=on-failure
+RestartSec=5s
+
+# Logging
+StandardOutput=append:/home/salesagent/SalesAgent/SalesAgent15_/required_files_project/autopilot_service_stdout.log
+StandardError=append:/home/salesagent/SalesAgent/SalesAgent15_/required_files_project/autopilot_service_stderr.log
+
+[Install]
+WantedBy=multi-user.target

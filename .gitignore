@@ -81,3 +81,26 @@ test_*.py
 
 # Node modules (if any)
 node_modules/
+
+# Documentation files (except README.md)
+*.md
+!README.md
+
+# Fix/temporary scripts
+fix_*.py
+fix*.py
+
+# Project documentation (legacy)
+AUTOPILOT_RULE_PRIORITY_FIX.md
+EMAIL_THREADING_BUGS.md
+PRIORITY_QUICK_REFERENCE.md
+PRODUCTION_DEPLOYMENT_GUIDE.md
+SERVICE_SETUP.md
+SERVICE_SETUP_AUTOPILOT.md
+SERVICE_SETUP_LINUX.md
+SYSTEM_AUDIT.md
+TECHNICAL_ARCHITECTURE.md
+TESTING_PROMPTS.md
+web_ui/PROJECT_SUMMARY.md
+web_ui/TESTING_REPORT.md
+
